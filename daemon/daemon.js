@@ -90,21 +90,28 @@ function loadOrCreateSecret() {
 // ---------------------------------------------------------------------------
 // TLS Certificate Generation
 //
-// Uses openssl to generate a self-signed certificate valid for 365 days.
-// If openssl is not available, falls back to plain HTTP (still secure on
-// loopback, but browser will warn about mixed content).
+// Strategy (ordered by preference):
+//   1. mkcert — generates locally-trusted certificate, zero browser warnings.
+//      mkcert creates a local CA, installs it in the OS/browser trust store
+//      (macOS Keychain, Linux NSS, Windows Trust Store), then issues a valid
+//      cert for 127.0.0.1 that all browsers accept automatically. This mirrors
+//      Warsaw's certutil approach but uses the standard mkcert tool.
+//      Install: brew install mkcert && mkcert -install
+//   2. openssl — self-signed cert. Works everywhere but browser shows a
+//      warning (user must click "Advanced → Proceed").
+//   3. HTTP fallback — no TLS. Only on loopback, still safe from network
+//      attackers but browser may block mixed-content requests from HTTPS pages.
 //
 // Warsaw injects the CA cert into browser trust stores via certutil.
-// POCDNA requires the user to manually accept the browser warning.
+// mkcert achieves the same result through the OS trust store API.
 // ---------------------------------------------------------------------------
 
 /**
- * Generates or loads a self-signed TLS certificate for the HTTPS server.
+ * Generates or loads a TLS certificate for the HTTPS server.
  *
- * Tries openssl first (most systems have it). Falls back to HTTP-only
- * mode if openssl is unavailable.
+ * Tries mkcert → openssl → HTTP. Reuses existing valid certificates.
  *
- * @returns {{ cert?: Buffer, key?: Buffer, tls: boolean }}
+ * @returns {{ cert?: Buffer, key?: Buffer, tls: boolean, method: string }}
  */
 function generateTls() {
   // Reuse existing certificate if present and valid
@@ -112,20 +119,35 @@ function generateTls() {
     try {
       const cert = fs.readFileSync(CERT_PATH);
       const key = fs.readFileSync(KEY_PATH);
-      // Quick validation: try creating a server with these certs
       https.createServer({ cert, key }, (_req, res) => {
         res.writeHead(200);
         res.end();
       }).listen(0, '127.0.0.1').close();
-      return { cert, key, tls: true };
+      return { cert, key, tls: true, method: 'reused' };
     } catch {
-      // Certs exist but are invalid — clean up and regenerate
       fs.unlinkSync(CERT_PATH);
       fs.unlinkSync(KEY_PATH);
     }
   }
 
-  // Generate new certificate pair using openssl
+  // Tier 1: mkcert — locally-trusted certificate, zero browser warnings
+  try {
+    execSync('mkcert --version', { stdio: 'ignore', timeout: 3000 });
+    execSync(
+      `mkcert -cert-file "${CERT_PATH}" -key-file "${KEY_PATH}" 127.0.0.1 localhost ::1`,
+      { timeout: 10000 }
+    );
+    const cert = fs.readFileSync(CERT_PATH);
+    const key = fs.readFileSync(KEY_PATH);
+    fs.chmodSync(KEY_PATH, 0o600);
+    fs.chmodSync(CERT_PATH, 0o600);
+    console.log('[daemon] TLS certificate generated via mkcert (locally trusted, no browser warnings)');
+    return { cert, key, tls: true, method: 'mkcert' };
+  } catch (e) {
+    console.log(`[daemon] mkcert not available (${e.message.trim().split('\n')[0]}), trying openssl...`);
+  }
+
+  // Tier 2: openssl — self-signed cert (browser shows warning)
   try {
     execSync(
       `openssl req -x509 -newkey rsa:2048 -keyout "${KEY_PATH}" ` +
@@ -136,12 +158,11 @@ function generateTls() {
     const key = fs.readFileSync(KEY_PATH);
     fs.chmodSync(KEY_PATH, 0o600);
     fs.chmodSync(CERT_PATH, 0o600);
-    console.log('[daemon] TLS certificate generated via openssl');
-    return { cert, key, tls: true };
+    console.log('[daemon] TLS certificate generated via openssl (self-signed, browser will show warning)');
+    return { cert, key, tls: true, method: 'openssl' };
   } catch (e) {
-    // Openssl not available — degrade to HTTP
-    console.log(`[daemon] openssl not available (${e.message}), falling back to HTTP`);
-    return { tls: false };
+    console.log(`[daemon] openssl not available (${e.message.trim().split('\n')[0]}), falling back to HTTP`);
+    return { tls: false, method: 'http' };
   }
 }
 
@@ -358,7 +379,13 @@ const protocol = tlsCfg.tls ? 'https' : 'http';
 const server = createServer();
 
 server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[daemon] listening on ${protocol}://127.0.0.1:${PORT}`);
+  console.log(`[daemon] listening on ${protocol}://127.0.0.1:${PORT} (${tlsCfg.method})`);
+  if (tlsCfg.method === 'openssl') {
+    console.log('[daemon] note: install mkcert (brew install mkcert && mkcert -install) to eliminate browser warnings');
+  }
+  if (!tlsCfg.tls) {
+    console.log('[daemon] note: install mkcert or openssl for HTTPS support');
+  }
 });
 
 // Graceful shutdown on SIGTERM (systemd stop) or SIGINT (Ctrl+C)

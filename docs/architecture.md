@@ -194,10 +194,13 @@ flowchart TD
     subgraph TLS["TLS Setup"]
         CertCheck{"/tmp/pocdna-cert.pem\nexists & valid?"}
         CertCheck -->|"Yes"| LoadCert["Load existing cert + key"]
-        CertCheck -->|"No"| OpenSSL{"openssl available?"}
-        OpenSSL -->|"Yes"| GenCert["openssl req -x509\nCN=POCDNA Daemon"]
+        CertCheck -->|"No"| Mkcert{"mkcert available?"}
+        Mkcert -->|"Yes"| GenMkcert["mkcert -cert-file -key-file\n127.0.0.1 localhost ::1\n→ locally-trusted, zero warnings"]
+        Mkcert -->|"No"| OpenSSL{"openssl available?"}
+        OpenSSL -->|"Yes"| GenCert["openssl req -x509\nCN=POCDNA Daemon\n→ self-signed, browser warning"]
         OpenSSL -->|"No"| Fallback["Fallback to HTTP\n(localhost only)"]
         LoadCert --> Listen
+        GenMkcert --> Listen
         GenCert --> Listen
         Fallback --> Listen
     end
@@ -268,7 +271,7 @@ The terminal verification result is cached in the session — subsequent request
 | Secret key on disk | Readable by any process (`/tmp`) | TPM/HSM-bound key, Secure Enclave |
 | Daemon is a script | Can be killed, replaced | Native binary with kernel driver (Warsaw's `gbpkm.sys`) |
 | No anti-VM detection | VM fingerprint identical to host | Detect hypervisor artifacts, SMBIOS |
-| CA cert not trusted | User sees browser warning | Inject CA into trust stores (Warsaw's `certutil -A`) |
+| CA cert not trusted | User sees browser warning (openssl) or zero warnings (mkcert) | Inject CA into trust stores (Warsaw's `certutil -A`) |
 | HMAC symmetric key | Server knows the secret | WebAuthn asymmetric (private key never leaves device) |
 
 ## File Map

@@ -153,8 +153,8 @@ flowchart LR
         direction TB
         P1["Node.js daemon\nnode daemon.js"]
         P2["No kernel driver\nDocumented as production gap"]
-        P3["Manual cert trust\nUser accepts browser warning"]
-        P4["HTTPS GET 127.0.0.1:30900\nSelf-signed TLS"]
+        P3["mkcert → openssl → HTTP\nmkcert injects CA into OS trust store\n(zero browser warnings)"]
+        P4["HTTPS GET 127.0.0.1:30900\nLocally-trusted TLS"]
         P5["No anti-VM detection\nDocumented as production gap"]
     end
 
@@ -163,18 +163,28 @@ flowchart LR
 
 ## Quick Start
 
-Prerequisites: **Docker**, **Node.js 20+**, **openssl** (for daemon TLS cert)
+Prerequisites: **Docker**, **Node.js 20+**
 
 ```bash
+# (Optional) Install mkcert for locally-trusted TLS — zero browser warnings
+#   macOS:  brew install mkcert && mkcert -install
+#   Linux:  apt install mkcert && mkcert -install
+#   Windows: choco install mkcert && mkcert -install
+
 # 1. Start the server
 docker compose up -d
 
-# 2. Start the local daemon
+# 2. Start the local daemon (generates TLS cert via mkcert → openssl → HTTP)
 node daemon/daemon.js
 
 # 3. Open http://localhost:3000/login.html
 #    Login: demo / demo123
 ```
+
+> **TLS certificate:** the daemon auto-detects the best available method:
+> - **mkcert** (recommended) — locally-trusted cert, no browser warnings
+> - **openssl** — self-signed cert, browser shows a warning (click Advanced → Proceed)
+> - **HTTP** — no TLS, only if neither mkcert nor openssl is installed
 
 ## Demo Flow
 
@@ -302,7 +312,7 @@ pocdna/
 | Daemon | Node.js script | Native binary (C) |
 | Kernel protection | None | Kernel driver (anti-keylogger) |
 | Secret storage | Plain file (`/tmp`) | TPM / Secure Enclave |
-| TLS trust | Manual browser warning | CA cert injected via certutil |
+| TLS trust | mkcert local CA (zero warnings) or self-signed (manual accept) | CA cert injected via certutil |
 | Anti-VM detection | None | Detects bwrap/FHS containers |
 | Device binding | HMAC symmetric key | WebAuthn asymmetric (ECDSA) |
 
