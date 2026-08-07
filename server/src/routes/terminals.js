@@ -19,8 +19,10 @@
  *   1. Browser collects current fingerprint
  *   2. POSTs to /api/auth/verify-terminal
  *   3. Server loads all user's terminals, runs fuzzy matching across all 3 layers
- *   4. Best match with ≥2/3 layers passing → known: true
- *   5. Session is updated with the terminal ID for subsequent sensitive actions
+ *   4. Layer availability is based on what each terminal registered — omitting a
+ *      registered layer (e.g. daemon payload) counts as failure, not as absent
+ *   5. Best match with ≥2 of available registered layers passing → known: true
+ *   6. Session is updated with the terminal ID for subsequent sensitive actions
  */
 
 import { Router } from 'express';
@@ -204,20 +206,29 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
       browserFP.components
     );
 
-    // Layer 2: validate daemon HMAC (only if both sides have daemon data)
+    const daemonRequired = Boolean(term.daemon_fp_hash);
+    const tlsRequired = Boolean(term.ja4_hash);
+
+    // Layer 2: required when terminal registered with daemon
     let daemonValid = null;
-    if (daemonPayload && daemonSignature && term.secret_key) {
-      daemonValid = validateDaemonHmac(daemonPayload, daemonSignature, term.secret_key);
+    if (daemonRequired) {
+      daemonValid = (daemonPayload && daemonSignature)
+        ? validateDaemonHmac(daemonPayload, daemonSignature, term.secret_key)
+        : false;
     }
 
-    // Layer 3: compare JA4 TLS fingerprints
+    // Layer 3: required when terminal registered with JA4
     let tlsMatch = null;
-    if (req.ja4 && term.ja4_hash) {
-      tlsMatch = req.ja4.hash === term.ja4_hash;
+    if (tlsRequired) {
+      tlsMatch = req.ja4 ? req.ja4.hash === term.ja4_hash : false;
     }
 
-    // Compute confidence score considering available layers
-    const result = computeConfidence(browserScore, daemonValid, tlsMatch);
+    const result = computeConfidence(browserScore, {
+      daemonRequired,
+      tlsRequired,
+      daemonValid,
+      tlsMatch,
+    });
 
     if (result.confidence > bestConfidence) {
       bestConfidence = result.confidence;

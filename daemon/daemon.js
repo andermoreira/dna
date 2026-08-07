@@ -17,8 +17,9 @@
  *
  * Security model:
  *   - Listens ONLY on 127.0.0.1 (not exposed to network)
- *   - Secret key never leaves the machine (only the HMAC signature does)
- *   - Payload includes timestamp for replay protection
+ *   - Secret key stays on the daemon; during initial terminal registration the
+ *     user pastes the base64 key into the app so the server can verify HMACs
+ *   - Payload includes timestamp for replay protection (validated server-side)
  *   - TLS with self-signed cert prevents local MITM
  *
  * Comparison with Warsaw (production):

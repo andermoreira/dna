@@ -21,6 +21,21 @@ import { requireAuth } from '../middleware/auth.js';
 const router = Router();
 
 /**
+ * Regenerates the session ID after authentication to prevent session fixation.
+ */
+function establishUserSession(req, res, user, statusCode) {
+  req.session.regenerate((err) => {
+    if (err) {
+      return res.status(500).json({ error: 'Session error' });
+    }
+    req.session.userId = user.id;
+    return res.status(statusCode).json({
+      user: { id: user.id, username: user.username },
+    });
+  });
+}
+
+/**
  * POST /api/auth/register
  *
  * Creates a new user account and logs them in immediately.
@@ -67,10 +82,8 @@ router.post('/register', async (req, res) => {
     'INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)'
   ).run(id, username, passwordHash, createdAt);
 
-  // Log the user in immediately after registration
-  req.session.userId = id;
-
-  res.status(201).json({ user: { id, username } });
+  // Log the user in immediately after registration (new session ID)
+  establishUserSession(req, res, { id, username }, 201);
 });
 
 /**
@@ -110,10 +123,8 @@ router.post('/login', async (req, res) => {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Set session userId — subsequent requests are authenticated
-  req.session.userId = user.id;
-
-  res.json({ user: { id: user.id, username: user.username } });
+  // Set session userId — subsequent requests are authenticated (new session ID)
+  establishUserSession(req, res, user, 200);
 });
 
 /**

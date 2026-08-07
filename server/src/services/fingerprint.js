@@ -8,7 +8,7 @@
  *   hashComponents(obj)         — Deterministic SHA-256 hash of a fingerprint
  *   fuzzyMatchBrowserFP(a, b)   — Weighted Jaccard similarity (0.0–1.0)
  *   validateDaemonHmac(p, s, k) — Validate HMAC-SHA256 signature
- *   computeConfidence(bw, dm, tl) — Multi-layer confidence scoring
+ *   computeConfidence(bw, opts) — Multi-layer confidence scoring (registered layers)
  *
  * Layer 1 (Browser): weighted fuzzy match of 10 signals.
  *   Hardware-dependent signals (Canvas 25%, WebGL 20%, Audio 15%) receive
@@ -30,6 +30,23 @@
  */
 
 import crypto from 'crypto';
+
+/** Maximum allowed clock skew for daemon payload timestamps (replay protection). */
+export const MAX_SKEW_MS = 60_000;
+
+/**
+ * Recursively sorts object keys for deterministic JSON serialization.
+ * Must match the daemon's sortKeys implementation.
+ */
+export function sortKeys(obj) {
+  if (Array.isArray(obj)) return obj.map(sortKeys);
+  if (obj === null || typeof obj !== 'object') return obj;
+  const sorted = {};
+  Object.keys(obj).sort().forEach(k => {
+    sorted[k] = sortKeys(obj[k]);
+  });
+  return sorted;
+}
 
 /**
  * Generates a deterministic SHA-256 hash of a fingerprint object.
@@ -162,11 +179,33 @@ export function fuzzyMatchBrowserFP(stored, candidate) {
  */
 export function validateDaemonHmac(payload, signature, secretKeyBase64) {
   try {
+    if (!payload || typeof payload !== 'object') {
+      return false;
+    }
+
+    const timestamp = payload.timestamp;
+    if (typeof timestamp !== 'number' || !Number.isFinite(timestamp)) {
+      return false;
+    }
+
+    if (Math.abs(Date.now() - timestamp) > MAX_SKEW_MS) {
+      return false;
+    }
+
     const secretKey = Buffer.from(secretKeyBase64, 'base64');
+    const sorted = sortKeys(payload);
     const expected = crypto.createHmac('sha256', secretKey)
-      .update(JSON.stringify(payload))
+      .update(JSON.stringify(sorted))
       .digest('hex');
-    return expected === signature;
+
+    if (typeof signature !== 'string' || expected.length !== signature.length) {
+      return false;
+    }
+
+    return crypto.timingSafeEqual(
+      Buffer.from(expected, 'hex'),
+      Buffer.from(signature, 'hex')
+    );
   } catch {
     return false;
   }
@@ -175,68 +214,70 @@ export function validateDaemonHmac(payload, signature, secretKeyBase64) {
 /**
  * Computes the overall terminal confidence score from the three layers.
  *
+ * Layer availability is derived from what the terminal **registered**, not
+ * from what the client chose to send. Omitting a registered layer counts as
+ * a failure, preventing downgrade to browser-only on daemon-enabled terminals.
+ *
  * Decision logic:
- *   1. Count how many layers are available (non-null)
- *   2. Count how many layers pass
+ *   1. Browser is always evaluated (required on every verify request)
+ *   2. Daemon/TLS count as available only when registered on the terminal
  *   3. Required matches = min(2, max(1, availableLayers))
- *      — If 1 layer available: need 1 match
- *      — If 2+ layers available: need 2 matches
  *   4. known = matched ≥ required
  *   5. confidence = matched / available
  *
- * This adapts gracefully when layers are missing:
- *   - Browser-only terminal (daemon=null, tls=null):
- *     available=1, required=1 → browser match gives known=true
- *   - Full terminal (daemon=true, tls=true):
- *     available=3, required=2 → need 2 of 3 to match
- *
  * @param {number} browserScore — 0.0–1.0 from fuzzyMatchBrowserFP
- * @param {boolean|null} daemonValid — true/false/null (null = not provided)
- * @param {boolean|null} tlsMatch — true/false/null (null = not available)
+ * @param {object} options
+ * @param {boolean} options.daemonRequired — terminal was registered with daemon
+ * @param {boolean} options.tlsRequired — terminal was registered with JA4
+ * @param {boolean|null} options.daemonValid — HMAC result; null when not required
+ * @param {boolean|null} options.tlsMatch — JA4 result; null when not required
  * @returns {{ known: boolean, confidence: number, layersMatched: number, layers: object }}
  */
-export function computeConfidence(browserScore, daemonValid, tlsMatch) {
+export function computeConfidence(browserScore, {
+  daemonRequired,
+  tlsRequired,
+  daemonValid,
+  tlsMatch,
+}) {
   let layersMatched = 0;
   let layersAvailable = 0;
   const layers = {};
 
-  // Layer 1: Browser fingerprint
+  // Layer 1: Browser fingerprint — always evaluated on verify
+  layersAvailable++;
   if (browserScore >= 0.7) {
     layersMatched++;
-    layersAvailable++;
     layers.browser = true;
-  } else if (browserScore > 0) {
-    layersAvailable++;
-    layers.browser = false;
   } else {
-    layers.browser = null;
+    layers.browser = false;
   }
 
-  // Layer 2: Daemon HMAC
-  if (daemonValid === true) {
-    layersMatched++;
+  // Layer 2: Daemon HMAC — required when terminal registered with daemon
+  if (daemonRequired) {
     layersAvailable++;
-    layers.daemon = true;
-  } else if (daemonValid === false) {
-    layersAvailable++;
-    layers.daemon = false;
+    if (daemonValid === true) {
+      layersMatched++;
+      layers.daemon = true;
+    } else {
+      layers.daemon = false;
+    }
   } else {
     layers.daemon = null;
   }
 
-  // Layer 3: TLS fingerprint
-  if (tlsMatch === true) {
-    layersMatched++;
+  // Layer 3: TLS fingerprint — required when terminal registered with JA4
+  if (tlsRequired) {
     layersAvailable++;
-    layers.tls = true;
-  } else if (tlsMatch === false) {
-    layersAvailable++;
-    layers.tls = false;
+    if (tlsMatch === true) {
+      layersMatched++;
+      layers.tls = true;
+    } else {
+      layers.tls = false;
+    }
   } else {
     layers.tls = null;
   }
 
-  // Adaptive threshold: require 2 matches, but not more than available layers
   const required = Math.min(2, Math.max(1, layersAvailable));
   const known = layersMatched >= required;
   const confidence = layersMatched / Math.max(1, layersAvailable);

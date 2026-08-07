@@ -112,7 +112,7 @@ sequenceDiagram
 
     User->>Browser: Enter label + daemon secret key
     Browser->>Server: POST /api/auth/register-terminal
-    Note over Server: Store browser FP hash<br/>Store daemon payload hash<br/>Store daemon secret key<br/>Store JA4 hash
+    Note over Server: Store browser FP hash<br/>Store daemon payload hash<br/>Store daemon secret key (symmetric — pasted at registration)<br/>Store JA4 hash
 
     Server-->>Browser: { terminalId, layers: {browser,daemon,tls} }
     Browser->>User: "Terminal Registered"
@@ -314,7 +314,7 @@ pocdna/
 | Secret storage | Plain file (`/tmp`) | TPM / Secure Enclave |
 | TLS trust | mkcert local CA (zero warnings) or self-signed (manual accept) | CA cert injected via certutil |
 | Anti-VM detection | None | Detects bwrap/FHS containers |
-| Device binding | HMAC symmetric key | WebAuthn asymmetric (ECDSA) |
+| Device binding | HMAC symmetric key (user pastes daemon secret at registration; server stores it to verify future HMACs) | WebAuthn asymmetric (ECDSA) |
 
 ## License
 
