@@ -186,6 +186,43 @@ node daemon/daemon.js
 > - **openssl** — self-signed cert, browser shows a warning (click Advanced → Proceed)
 > - **HTTP** — no TLS, only if neither mkcert nor openssl is installed
 
+## Manual Verification
+
+Automated checks for security fixes (browser-only downgrade, session regeneration). Requires server and daemon running (see Quick Start).
+
+```bash
+NODE_TLS_REJECT_UNAUTHORIZED=0 node scripts/verify-manual.mjs
+```
+
+```mermaid
+sequenceDiagram
+    participant Script as verify-manual.mjs
+    participant Server as localhost:3000
+    participant Daemon as 127.0.0.1:30900
+
+    Script->>Server: GET /api/health
+    Script->>Daemon: GET /health
+    Script->>Server: POST /api/auth/login
+    Script->>Daemon: GET /fingerprint
+    Script->>Server: POST /api/auth/register-terminal
+    Script->>Daemon: GET /fingerprint (fresh timestamp)
+    Script->>Server: POST /api/auth/verify-terminal (with daemon)
+    Note over Script,Server: known: true
+
+    Script->>Server: POST /api/auth/verify-terminal (browser only)
+    Note over Script,Server: known: false (C1 fix)
+
+    Script->>Server: POST /api/auth/logout
+    Script->>Server: POST /api/auth/login
+    Note over Script,Server: connect.sid changed (A5 fix)
+```
+
+| Check | Expected |
+|---|---|
+| Verify with daemon | `known: true` |
+| Verify without `daemonPayload` | `known: false` |
+| Login after logout | New `connect.sid` cookie |
+
 ## Demo Flow
 
 | Step | Action | Expected |
@@ -271,6 +308,8 @@ flowchart TD
 pocdna/
 ├── docker-compose.yml
 ├── README.md
+├── scripts/
+│   └── verify-manual.mjs        (automated security verification)
 ├── docs/
 │   └── architecture.md          (detailed architecture docs)
 ├── specs/
