@@ -14,6 +14,7 @@
  */
 
 import { Router } from 'express';
+import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 
@@ -29,9 +30,17 @@ const router = Router();
  */
 function requireAdmin(req, res, next) {
   const key = req.headers['x-admin-key'];
-  if (!key || key !== process.env.ADMIN_KEY) {
+  const expected = process.env.ADMIN_KEY || '';
+
+  if (!key || typeof key !== 'string' || key.length !== expected.length) {
     return res.status(401).json({ error: 'Invalid admin key' });
   }
+
+  const valid = crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected));
+  if (!valid) {
+    return res.status(401).json({ error: 'Invalid admin key' });
+  }
+
   next();
 }
 

@@ -5,6 +5,7 @@ import {
   computeConfidence,
   validateDaemonHmac,
   sortKeys,
+  hashComponents,
   MAX_SKEW_MS,
 } from './fingerprint.js';
 
@@ -71,6 +72,27 @@ describe('computeConfidence', () => {
 
     assert.equal(result.known, true);
     assert.equal(result.layersMatched, 2);
+  });
+
+  it('does not count TLS alone toward quorum (corroborative only)', () => {
+    const result = computeConfidence(0, {
+      daemonRequired: false,
+      tlsRequired: true,
+      daemonValid: null,
+      tlsMatch: true,
+    });
+
+    assert.equal(result.known, false);
+    assert.equal(result.layers.tls, false);
+    assert.equal(result.layersMatched, 0);
+  });
+});
+
+describe('hashComponents', () => {
+  it('produces same hash regardless of key insertion order', () => {
+    const a = hashComponents({ z: 1, nested: { b: 2, a: 1 }, a: 0 });
+    const b = hashComponents({ a: 0, nested: { a: 1, b: 2 }, z: 1 });
+    assert.equal(a, b);
   });
 });
 

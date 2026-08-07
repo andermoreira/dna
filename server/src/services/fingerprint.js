@@ -24,9 +24,8 @@
  *   this key — it only forwards the signed payload.
  *
  * Layer 3 (TLS): exact string match of JA4 hash.
- *   The JA4 hash identifies the TLS implementation (browser family + OS).
- *   It's extracted server-side from the ClientHello packet and cannot be
- *   controlled by page JavaScript.
+ *   Corroborative only — counts toward quorum when browser or daemon already matched.
+ *   JA4 identifies browser/OS family, not a unique terminal.
  */
 
 import crypto from 'crypto';
@@ -62,12 +61,7 @@ export function sortKeys(obj) {
  * @returns {string} 64-character hex SHA-256 digest
  */
 export function hashComponents(components) {
-  // Sort keys for deterministic JSON output
-  const ordered = {};
-  Object.keys(components).sort().forEach(k => {
-    ordered[k] = components[k];
-  });
-  const str = JSON.stringify(ordered);
+  const str = JSON.stringify(sortKeys(components));
   return crypto.createHash('sha256').update(str).digest('hex');
 }
 
@@ -265,10 +259,11 @@ export function computeConfidence(browserScore, {
     layers.daemon = null;
   }
 
-  // Layer 3: TLS fingerprint — required when terminal registered with JA4
+  // Layer 3: TLS fingerprint — corroborative; required when terminal registered with JA4
   if (tlsRequired) {
     layersAvailable++;
-    if (tlsMatch === true) {
+    const strongLayerMatched = browserScore >= 0.7 || daemonValid === true;
+    if (tlsMatch === true && strongLayerMatched) {
       layersMatched++;
       layers.tls = true;
     } else {

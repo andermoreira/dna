@@ -49,6 +49,10 @@ const PORT = 30900;
 const SECRET_KEY_PATH = process.env.SECRET_KEY_PATH || path.join(os.tmpdir(), 'pocdna-secret.key');
 const CERT_PATH = process.env.CERT_PATH || path.join(os.tmpdir(), 'pocdna-cert.pem');
 const KEY_PATH = process.env.KEY_PATH || path.join(os.tmpdir(), 'pocdna-key.pem');
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
 
 // ---------------------------------------------------------------------------
 // Secret Key Management
@@ -108,6 +112,14 @@ function loadOrCreateSecret() {
 // ---------------------------------------------------------------------------
 
 /**
+ * Validates that cert and key PEM files form a usable TLS pair.
+ */
+function validateCertKeyPair(cert, key) {
+  crypto.createPrivateKey(key);
+  new crypto.X509Certificate(cert);
+}
+
+/**
  * Generates or loads a TLS certificate for the HTTPS server.
  *
  * Tries mkcert → openssl → HTTP. Reuses existing valid certificates.
@@ -120,10 +132,7 @@ function generateTls() {
     try {
       const cert = fs.readFileSync(CERT_PATH);
       const key = fs.readFileSync(KEY_PATH);
-      https.createServer({ cert, key }, (_req, res) => {
-        res.writeHead(200);
-        res.end();
-      }).listen(0, '127.0.0.1').close();
+      validateCertKeyPair(cert, key);
       return { cert, key, tls: true, method: 'reused' };
     } catch {
       fs.unlinkSync(CERT_PATH);
@@ -310,18 +319,25 @@ const tlsCfg = generateTls();
 /**
  * HTTP request handler — serves /health and /fingerprint endpoints.
  *
- * CORS headers are set to allow cross-origin requests from the browser
- * page (which may be served from a different port).
+ * CORS is restricted to an allowlist of application origins (default: localhost:3000).
+ * Loopback binding alone does not prevent cross-origin reads from malicious pages.
  *
  * Endpoints:
  *   GET /health      — health check, returns { status: "ok" }
  *   GET /fingerprint — collects OS data, signs with HMAC, returns { payload, signature }
  */
-function handleRequest(req, res) {
-  // Allow CORS from any origin (safe because we only listen on loopback)
-  res.setHeader('Access-Control-Allow-Origin', '*');
+function setCorsHeaders(req, res) {
+  const origin = req.headers.origin;
+  if (origin && ALLOWED_ORIGINS.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Vary', 'Origin');
+  }
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+}
+
+function handleRequest(req, res) {
+  setCorsHeaders(req, res);
 
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {

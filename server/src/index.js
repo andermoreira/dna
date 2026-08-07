@@ -33,6 +33,7 @@ import { seed } from './seed.js';
 import { extractJa4 } from './middleware/ja4.js';
 import { requireAuth } from './middleware/auth.js';
 import { requireKnownTerminal } from './middleware/requireTerminal.js';
+import { errorHandler } from './middleware/errorHandler.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -124,6 +125,8 @@ app.post('/api/actions/sensitive', requireAuth, requireKnownTerminal, (req, res)
     terminalId: req.session.terminalId,
   });
 });
+
+app.use(errorHandler);
 
 // ---------------------------------------------------------------------------
 // Startup: seed database then listen

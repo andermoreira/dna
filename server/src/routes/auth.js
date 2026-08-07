@@ -17,8 +17,12 @@ import bcrypt from 'bcrypt';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
 
 const router = Router();
+
+// Precomputed bcrypt hash used to equalize login timing when username is not found.
+const DUMMY_PASSWORD_HASH = '$2b$12$XOV8xqpbI93p5h9tUIM3LOglH5ZNz2bjWdrLQT9ZGkpT6b8bvomOu';
 
 /**
  * Regenerates the session ID after authentication to prevent session fixation.
@@ -47,8 +51,8 @@ function establishUserSession(req, res, user, statusCode) {
  * Returns 201 with user object on success.
  * Returns 409 if username is already taken.
  */
-router.post('/register', async (req, res) => {
-  const { username, password } = req.body;
+router.post('/register', asyncHandler(async (req, res) => {
+  const { username, password } = req.body || {};
 
   // Input validation — reject empty or non-string values
   if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
@@ -84,7 +88,7 @@ router.post('/register', async (req, res) => {
 
   // Log the user in immediately after registration (new session ID)
   establishUserSession(req, res, { id, username }, 201);
-});
+}));
 
 /**
  * POST /api/auth/login
@@ -98,8 +102,8 @@ router.post('/register', async (req, res) => {
  * Returns 401 with generic "Invalid credentials" on failure (does NOT
  * reveal whether the username exists — prevents user enumeration).
  */
-router.post('/login', async (req, res) => {
-  const { username, password } = req.body;
+router.post('/login', asyncHandler(async (req, res) => {
+  const { username, password } = req.body || {};
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -107,25 +111,18 @@ router.post('/login', async (req, res) => {
 
   const db = getDb();
 
-  // Load user by username — returns undefined if not found
   const user = db.prepare(
     'SELECT id, username, password_hash FROM users WHERE username = ?'
   ).get(username);
 
-  // Generic error message to prevent username enumeration
-  if (!user) {
+  const passwordHash = user?.password_hash || DUMMY_PASSWORD_HASH;
+  const valid = await bcrypt.compare(password, passwordHash);
+  if (!user || !valid) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // Constant-time password comparison via bcrypt
-  const valid = await bcrypt.compare(password, user.password_hash);
-  if (!valid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
-  }
-
-  // Set session userId — subsequent requests are authenticated (new session ID)
   establishUserSession(req, res, user, 200);
-});
+}));
 
 /**
  * POST /api/auth/logout

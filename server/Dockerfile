@@ -4,10 +4,12 @@ RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-COPY package.json ./
-RUN npm install
+COPY package.json package-lock.json ./
+RUN npm ci
 
-RUN mkdir -p /app/data /app/public
+RUN mkdir -p /app/data /app/public && chown -R node:node /app
+
+USER node
 
 EXPOSE 3000
 

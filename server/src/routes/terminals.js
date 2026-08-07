@@ -58,7 +58,7 @@ const router = Router();
  *   - Invalid daemon HMAC → 400 (check the secret key)
  */
 router.post('/register-terminal', requireAuth, (req, res) => {
-  const { label, browserFP, daemonPayload, daemonSignature, daemonSecret } = req.body;
+  const { label, browserFP, daemonPayload, daemonSignature, daemonSecret } = req.body || {};
 
   // Validate terminal label
   if (!label || typeof label !== 'string' || label.trim().length === 0 || label.length > 64) {
@@ -178,7 +178,7 @@ router.post('/register-terminal', requireAuth, (req, res) => {
  * On success, the session is updated with the terminal ID.
  */
 router.post('/verify-terminal', requireAuth, (req, res) => {
-  const { browserFP, daemonPayload, daemonSignature } = req.body;
+  const { browserFP, daemonPayload, daemonSignature } = req.body || {};
 
   if (!browserFP || !browserFP.components) {
     return res.status(400).json({ error: 'Browser fingerprint is required' });
