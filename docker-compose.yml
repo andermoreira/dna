@@ -1,0 +1,15 @@
+services:
+  server:
+    build: ./server
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - ADMIN_KEY=pocdna-admin-secret
+    volumes:
+      - ./server/src:/app/src:ro
+      - ./server/public:/app/public:ro
+      - ./server/data:/app/data
+      - ./server/package.json:/app/package.json:ro
+    command: node --watch src/index.js

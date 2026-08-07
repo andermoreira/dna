@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POCDNA — Login</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      display: flex; align-items: center; justify-content: center;
+      min-height: 100vh;
+    }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 2.5rem;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+    }
+    h1 {
+      font-size: 1.5rem;
+      margin-bottom: 0.25rem;
+      color: #e94560;
+    }
+    .subtitle {
+      font-size: 0.85rem;
+      color: #8a8a9a;
+      margin-bottom: 1.5rem;
+    }
+    .form-group {
+      margin-bottom: 1rem;
+    }
+    label {
+      display: block;
+      font-size: 0.8rem;
+      color: #a0a0b0;
+      margin-bottom: 0.3rem;
+    }
+    input {
+      width: 100%;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      background: #0f0f23;
+      color: #e0e0e0;
+      font-size: 0.95rem;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    input:focus {
+      border-color: #e94560;
+    }
+    button {
+      width: 100%;
+      padding: 0.7rem;
+      border: none;
+      border-radius: 8px;
+      background: #e94560;
+      color: #fff;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      margin-top: 0.5rem;
+    }
+    button:hover { background: #c73650; }
+    button.secondary {
+      background: transparent;
+      border: 1px solid #2a2a4a;
+      color: #a0a0b0;
+      margin-top: 0.75rem;
+    }
+    button.secondary:hover { background: #1a1a3a; }
+    .error {
+      background: #3a1520;
+      color: #e94560;
+      padding: 0.6rem 0.75rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    .error.visible { display: block; }
+    .toggle-text {
+      text-align: center;
+      font-size: 0.8rem;
+      color: #8a8a9a;
+      margin-top: 1rem;
+    }
+    .toggle-text a {
+      color: #e94560;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .toggle-text a:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>POCDNA</h1>
+    <p class="subtitle">Terminal Authentication POC</p>
+    <div id="error" class="error"></div>
+    <form id="authForm">
+      <div class="form-group">
+        <label for="username">Username</label>
+        <input type="text" id="username" required minlength="2" maxlength="32">
+      </div>
+      <div class="form-group">
+        <label for="password">Password</label>
+        <input type="password" id="password" required minlength="4">
+      </div>
+      <button type="submit" id="submitBtn">Login</button>
+      <button type="button" class="secondary" id="toggleBtn">Create account</button>
+    </form>
+    <p class="toggle-text">
+      Demo: <strong>demo</strong> / <strong>demo123</strong>
+    </p>
+  </div>
+
+  <script>
+    let mode = 'login';
+
+    function showError(msg) {
+      const el = document.getElementById('error');
+      el.textContent = msg;
+      el.classList.add('visible');
+    }
+
+    function hideError() {
+      document.getElementById('error').classList.remove('visible');
+    }
+
+    document.getElementById('toggleBtn').addEventListener('click', () => {
+      mode = mode === 'login' ? 'register' : 'login';
+      document.getElementById('submitBtn').textContent = mode === 'login' ? 'Login' : 'Register';
+      document.getElementById('toggleBtn').textContent = mode === 'login' ? 'Create account' : 'Back to login';
+      hideError();
+    });
+
+    document.getElementById('authForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      hideError();
+
+      const username = document.getElementById('username').value.trim();
+      const password = document.getElementById('password').value;
+
+      if (!username || !password) {
+        showError('Username and password are required');
+        return;
+      }
+
+      const endpoint = mode === 'login' ? '/api/auth/login' : '/api/auth/register';
+
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+
+        const data = await res.json();
+
+        if (res.ok) {
+          window.location.href = '/';
+        } else {
+          showError(data.error || 'Authentication failed');
+        }
+      } catch (err) {
+        showError('Connection failed. Is the server running?');
+      }
+    });
+  </script>
+</body>
+</html>

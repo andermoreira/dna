@@ -1,0 +1,19 @@
+{
+  "name": "pocdna-server",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "better-sqlite3": "^11.7.0",
+    "connect-sqlite3": "^0.9.15",
+    "cookie-parser": "^1.4.7",
+    "express": "^4.21.0",
+    "express-session": "^1.18.1",
+    "read-tls-client-hello": "^2.0.0",
+    "uuid": "^10.0.0"
+  }
+}

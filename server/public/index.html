@@ -1,0 +1,427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POCDNA — Dashboard</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      min-height: 100vh;
+    }
+    .navbar {
+      background: #16213e;
+      padding: 0.75rem 1.5rem;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #2a2a4a;
+    }
+    .navbar h1 { font-size: 1.1rem; color: #e94560; }
+    .navbar .right { display: flex; align-items: center; gap: 1rem; }
+    .navbar button {
+      padding: 0.4rem 1rem;
+      border: 1px solid #2a2a4a;
+      border-radius: 6px;
+      background: transparent;
+      color: #a0a0b0;
+      cursor: pointer;
+      font-size: 0.85rem;
+    }
+    .navbar button:hover { background: #1a1a3a; }
+    .daemon-dot {
+      width: 10px; height: 10px; border-radius: 50%; display: inline-block;
+    }
+    .daemon-dot.online { background: #4ade80; box-shadow: 0 0 6px #4ade80; }
+    .daemon-dot.offline { background: #e94560; box-shadow: 0 0 6px #e94560; }
+    .container { max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    .card {
+      background: #16213e;
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1rem;
+      border: 1px solid #2a2a4a;
+    }
+    .card h2 { font-size: 1rem; margin-bottom: 1rem; color: #c0c0d0; }
+    .badge {
+      display: inline-block;
+      padding: 0.3rem 0.75rem;
+      border-radius: 20px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .badge.known { background: #1a3a2a; color: #4ade80; }
+    .badge.unknown { background: #3a2a1a; color: #fbbf24; }
+    .badge.secure { background: #1a2a3a; color: #60a5fa; }
+    .badge.weak { background: #3a1a2a; color: #f87171; }
+    .layers {
+      display: flex; gap: 0.5rem; margin-top: 0.5rem; flex-wrap: wrap;
+    }
+    .layer {
+      padding: 0.25rem 0.5rem;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 600;
+    }
+    .layer.pass { background: #1a3a2a; color: #4ade80; }
+    .layer.fail { background: #3a1520; color: #e94560; }
+    .layer.missing { background: #1a1a2a; color: #6a6a7a; }
+    button.primary {
+      padding: 0.6rem 1.2rem;
+      border: none;
+      border-radius: 8px;
+      background: #e94560;
+      color: #fff;
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.primary:hover { background: #c73650; }
+    button.danger {
+      padding: 0.4rem 0.8rem;
+      border: 1px solid #e94560;
+      border-radius: 6px;
+      background: transparent;
+      color: #e94560;
+      font-size: 0.8rem;
+      cursor: pointer;
+    }
+    button.danger:hover { background: #3a1520; }
+    input {
+      padding: 0.5rem 0.75rem;
+      border: 1px solid #2a2a4a;
+      border-radius: 8px;
+      background: #0f0f23;
+      color: #e0e0e0;
+      font-size: 0.9rem;
+      outline: none;
+      width: 100%;
+      margin-bottom: 0.75rem;
+    }
+    input:focus { border-color: #e94560; }
+    .terminal-list { margin-top: 1rem; }
+    .terminal-item {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0.6rem 0;
+      border-bottom: 1px solid #1a1a3a;
+    }
+    .terminal-item:last-child { border-bottom: none; }
+    .terminal-item .info { font-size: 0.85rem; }
+    .terminal-item .meta { font-size: 0.7rem; color: #6a6a7a; }
+    .toast {
+      position: fixed; top: 1rem; right: 1rem;
+      padding: 0.75rem 1.25rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      z-index: 1000;
+      animation: slideIn 0.3s ease;
+    }
+    .toast.success { background: #1a3a2a; color: #4ade80; border: 1px solid #2a5a3a; }
+    .toast.error { background: #3a1520; color: #e94560; border: 1px solid #5a2530; }
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .hidden { display: none !important; }
+    .spinner {
+      width: 16px; height: 16px;
+      border: 2px solid #2a2a4a;
+      border-top-color: #e94560;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: inline-block;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .confidence-bar {
+      height: 6px; border-radius: 3px; background: #2a2a4a;
+      margin-top: 0.5rem; overflow: hidden;
+    }
+    .confidence-bar .fill {
+      height: 100%; border-radius: 3px;
+      transition: width 0.5s ease;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar">
+    <h1>POCDNA</h1>
+    <div class="right">
+      <span style="font-size:0.8rem;color:#8a8a9a">
+        Daemon: <span class="daemon-dot offline" id="daemonDot"></span>
+      </span>
+      <span id="navUser" style="font-size:0.85rem;color:#a0a0b0"></span>
+      <button onclick="logout()">Logout</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div id="loading" class="card">
+      <span class="spinner"></span> Loading fingerprint data...
+    </div>
+
+    <div id="terminalStatus" class="card hidden">
+      <h2>Terminal Status</h2>
+      <div id="statusContent"></div>
+    </div>
+
+    <div id="registerForm" class="card hidden">
+      <h2>Register This Terminal</h2>
+      <input type="text" id="terminalLabel" placeholder="Terminal name (e.g. My Laptop)" maxlength="64">
+      <input type="text" id="daemonSecret" placeholder="Daemon secret key (from terminal output)" style="font-size:0.75rem">
+      <button class="primary" onclick="registerTerminal()">Register Terminal</button>
+    </div>
+
+    <div id="sensitiveAction" class="card hidden">
+      <h2>Sensitive Action Demo</h2>
+      <p style="font-size:0.85rem;color:#8a8a9a;margin-bottom:1rem">
+        This simulates a high-risk operation (transfer, password change, etc.)
+        that requires a recognized terminal.
+      </p>
+      <button class="primary" onclick="performSensitiveAction()">Perform Sensitive Action (Transfer)</button>
+    </div>
+
+    <div id="deviceList" class="card hidden">
+      <h2>Registered Devices</h2>
+      <div id="terminalList" class="terminal-list"></div>
+    </div>
+  </div>
+
+  <script src="/js/fingerprint.js"></script>
+  <script>
+    let currentTerminalId = null;
+    let daemonOnline = false;
+    let currentBrowserFP = null;
+    let currentDaemonData = null;
+
+    function toast(msg, type) {
+      const el = document.createElement('div');
+      el.className = `toast ${type}`;
+      el.textContent = msg;
+      document.body.appendChild(el);
+      setTimeout(() => el.remove(), 3000);
+    }
+
+    async function logout() {
+      await fetch('/api/auth/logout', { method: 'POST' });
+      window.location.href = '/login.html';
+    }
+
+    async function checkDaemon() {
+      try {
+        const res = await fetch('https://127.0.0.1:30900/health', { mode: 'cors' });
+        daemonOnline = res.ok;
+      } catch {
+        daemonOnline = false;
+      }
+      document.getElementById('daemonDot').className = `daemon-dot ${daemonOnline ? 'online' : 'offline'}`;
+    }
+
+    async function collectDaemonFP() {
+      if (!daemonOnline) return null;
+      try {
+        const res = await fetch('https://127.0.0.1:30900/fingerprint', { mode: 'cors' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        currentDaemonData = data;
+        return data;
+      } catch {
+        return null;
+      }
+    }
+
+    async function verifyTerminal() {
+      const daemonData = await collectDaemonFP();
+      const body = {
+        browserFP: currentBrowserFP,
+      };
+      if (daemonData) {
+        body.daemonPayload = daemonData.payload;
+        body.daemonSignature = daemonData.signature;
+      }
+
+      try {
+        const res = await fetch('/api/auth/verify-terminal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        return await res.json();
+      } catch {
+        return { known: false, confidence: 0, layers: { browser: false, daemon: false, tls: false } };
+      }
+    }
+
+    function renderStatus(result) {
+      const el = document.getElementById('statusContent');
+      const fillColor = result.confidence >= 0.66 ? '#4ade80' : result.confidence >= 0.33 ? '#fbbf24' : '#e94560';
+
+      if (result.known) {
+        currentTerminalId = result.terminalId;
+        el.innerHTML = `
+          <span class="badge known">Terminal Recognized</span>
+          <span class="badge ${daemonOnline ? 'secure' : 'weak'}" style="margin-left:0.5rem">${daemonOnline ? 'Secure' : 'Basic'}</span>
+          <div class="confidence-bar"><div class="fill" style="width:${Math.round(result.confidence * 100)}%;background:${fillColor}"></div></div>
+          <div style="font-size:0.75rem;color:#8a8a9a;margin-top:0.25rem">Confidence: ${Math.round(result.confidence * 100)}%</div>
+          ${renderLayers(result.layers)}
+        `;
+        document.getElementById('registerForm').classList.add('hidden');
+        document.getElementById('sensitiveAction').classList.remove('hidden');
+      } else {
+        currentTerminalId = null;
+        el.innerHTML = `
+          <span class="badge unknown">Unknown Terminal</span>
+          <div class="confidence-bar"><div class="fill" style="width:${Math.round(result.confidence * 100)}%;background:${fillColor}"></div></div>
+          <div style="font-size:0.75rem;color:#8a8a9a;margin-top:0.25rem">Confidence: ${Math.round(result.confidence * 100)}%</div>
+          ${renderLayers(result.layers || {})}
+        `;
+        document.getElementById('registerForm').classList.remove('hidden');
+        document.getElementById('sensitiveAction').classList.add('hidden');
+      }
+    }
+
+    function renderLayers(layers) {
+      if (!layers) return '';
+      const items = [
+        { name: 'Browser', pass: layers.browser },
+        { name: 'Daemon', pass: layers.daemon },
+        { name: 'TLS (JA4)', pass: layers.tls },
+      ];
+      return `<div class="layers">${items.map(l => {
+        if (l.pass === null || l.pass === undefined) return `<span class="layer missing">${l.name}: N/A</span>`;
+        return `<span class="layer ${l.pass ? 'pass' : 'fail'}">${l.name}: ${l.pass ? 'Pass' : 'Fail'}</span>`;
+      }).join('')}</div>`;
+    }
+
+    async function registerTerminal() {
+      const label = document.getElementById('terminalLabel').value.trim();
+      const secretInput = document.getElementById('daemonSecret').value.trim();
+
+      if (!label) {
+        toast('Please enter a terminal name', 'error');
+        return;
+      }
+
+      const body = {
+        label,
+        browserFP: currentBrowserFP,
+      };
+
+      if (currentDaemonData && secretInput) {
+        body.daemonPayload = currentDaemonData.payload;
+        body.daemonSignature = currentDaemonData.signature;
+        body.daemonSecret = secretInput;
+      }
+
+      try {
+        const res = await fetch('/api/auth/register-terminal', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+          toast('Terminal registered successfully!', 'success');
+          document.getElementById('registerForm').classList.add('hidden');
+          document.getElementById('daemonSecret').value = '';
+          await loadDevices();
+          const result = await verifyTerminal();
+          renderStatus(result);
+        } else {
+          toast(data.error || 'Registration failed', 'error');
+        }
+      } catch {
+        toast('Connection failed', 'error');
+      }
+    }
+
+    async function performSensitiveAction() {
+      try {
+        const res = await fetch('/api/actions/sensitive', { method: 'POST' });
+        const data = await res.json();
+
+        if (res.ok) {
+          toast('Action completed — terminal verified', 'success');
+        } else {
+          toast(data.error || 'Action blocked', 'error');
+        }
+      } catch {
+        toast('Connection failed', 'error');
+      }
+    }
+
+    async function loadDevices() {
+      try {
+        const res = await fetch('/api/user/terminals');
+        const data = await res.json();
+        const list = document.getElementById('terminalList');
+
+        if (data.terminals.length === 0) {
+          list.innerHTML = '<p style="font-size:0.85rem;color:#6a6a7a">No devices registered yet.</p>';
+        } else {
+          list.innerHTML = data.terminals.map(t => `
+            <div class="terminal-item">
+              <div>
+                <div class="info">${escapeHtml(t.label)} ${t.hasDaemon ? '🖥' : '🌐'}</div>
+                <div class="meta">${t.lastSeenAt ? 'Last seen: ' + new Date(t.lastSeenAt).toLocaleString() : ''}</div>
+              </div>
+              <button class="danger" onclick="deleteTerminal('${t.id}')">Remove</button>
+            </div>
+          `).join('');
+        }
+        document.getElementById('deviceList').classList.remove('hidden');
+      } catch {
+        document.getElementById('deviceList').classList.add('hidden');
+      }
+    }
+
+    async function deleteTerminal(id) {
+      if (!confirm('Remove this terminal? It will no longer be recognized.')) return;
+
+      try {
+        await fetch(`/api/user/terminals/${id}`, { method: 'DELETE' });
+        toast('Terminal removed', 'success');
+        await loadDevices();
+        const result = await verifyTerminal();
+        renderStatus(result);
+      } catch {
+        toast('Failed to remove terminal', 'error');
+      }
+    }
+
+    function escapeHtml(str) {
+      const div = document.createElement('div');
+      div.textContent = str;
+      return div.innerHTML;
+    }
+
+    async function init() {
+      try {
+        const meRes = await fetch('/api/auth/me');
+        if (!meRes.ok) {
+          window.location.href = '/login.html';
+          return;
+        }
+        const meData = await meRes.json();
+        document.getElementById('navUser').textContent = meData.user.username;
+      } catch {
+        window.location.href = '/login.html';
+        return;
+      }
+
+      await checkDaemon();
+
+      document.getElementById('loading').classList.remove('hidden');
+
+      currentBrowserFP = await Fingerprint.collectAll();
+
+      document.getElementById('loading').classList.add('hidden');
+      document.getElementById('terminalStatus').classList.remove('hidden');
+
+      const result = await verifyTerminal();
+      renderStatus(result);
+      await loadDevices();
+    }
+
+    init();
+  </script>
+</body>
+</html>

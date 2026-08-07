@@ -1,0 +1,8 @@
+{
+  "name": "pocdna-daemon",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node daemon.js"
+  }
+}
