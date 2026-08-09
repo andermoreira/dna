@@ -5,3 +5,4 @@ server/data/
 *.db
 /tmp/
 .env
+.tmp-daemon/

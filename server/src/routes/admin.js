@@ -6,7 +6,8 @@
  *   POST /api/admin/terminals/:id/revoke — revoke a terminal globally
  *
  * Protected by x-admin-key header authentication.
- * The admin key is set via ADMIN_KEY environment variable (default: pocdna-admin-secret).
+ * The admin key is set via the ADMIN_KEY environment variable. When it is not
+ * set, the middleware fails closed: every request is rejected with 401.
  *
  * Admin operations are cross-user — an admin can revoke any terminal
  * regardless of who owns it. This is used for fraud investigation and
@@ -17,6 +18,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
+import { logEvent } from '../log.js';
 
 const router = Router();
 
@@ -33,12 +35,12 @@ function requireAdmin(req, res, next) {
   const expected = process.env.ADMIN_KEY || '';
 
   if (!key || typeof key !== 'string' || key.length !== expected.length) {
-    return res.status(401).json({ error: 'Invalid admin key' });
+    return res.status(401).json({ code: 'invalid_admin_key', message: 'Invalid admin key' });
   }
 
   const valid = crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected));
   if (!valid) {
-    return res.status(401).json({ error: 'Invalid admin key' });
+    return res.status(401).json({ code: 'invalid_admin_key', message: 'Invalid admin key' });
   }
 
   next();
@@ -111,11 +113,11 @@ router.post('/terminals/:terminalId/revoke', requireAdmin, (req, res) => {
   ).get(req.params.terminalId);
 
   if (!terminal) {
-    return res.status(404).json({ error: 'Terminal not found' });
+    return res.status(404).json({ code: 'terminal_not_found', message: 'Terminal not found' });
   }
 
   if (terminal.revoked_at) {
-    return res.status(409).json({ error: 'Terminal already revoked' });
+    return res.status(409).json({ code: 'terminal_already_revoked', message: 'Terminal already revoked' });
   }
 
   // Soft-delete the terminal
@@ -132,9 +134,11 @@ router.post('/terminals/:terminalId/revoke', requireAdmin, (req, res) => {
     req.ip || '127.0.0.1', req.get('user-agent') || '', now
   );
 
-  console.log(
-    `[terminal.revoked] user=${terminal.user_id} terminal=${terminal.id} revoked_by=admin`
-  );
+  logEvent('terminal.revoked', {
+    user_id: terminal.user_id,
+    terminal_id: terminal.id,
+    revoked_by: 'admin',
+  });
 
   res.status(204).end();
 });

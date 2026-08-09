@@ -18,8 +18,16 @@ import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
 import { asyncHandler } from '../middleware/errorHandler.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
+
+// Brute-force protection: per-IP window on credential endpoints
+const loginRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  keyFn: (req) => `login:${req.ip}`,
+});
 
 // Precomputed bcrypt hash used to equalize login timing when username is not found.
 const DUMMY_PASSWORD_HASH = '$2b$12$XOV8xqpbI93p5h9tUIM3LOglH5ZNz2bjWdrLQT9ZGkpT6b8bvomOu';
@@ -30,7 +38,7 @@ const DUMMY_PASSWORD_HASH = '$2b$12$XOV8xqpbI93p5h9tUIM3LOglH5ZNz2bjWdrLQT9ZGkpT
 function establishUserSession(req, res, user, statusCode) {
   req.session.regenerate((err) => {
     if (err) {
-      return res.status(500).json({ error: 'Session error' });
+      return res.status(500).json({ code: 'session_error', message: 'Session error' });
     }
     req.session.userId = user.id;
     return res.status(statusCode).json({
@@ -51,21 +59,21 @@ function establishUserSession(req, res, user, statusCode) {
  * Returns 201 with user object on success.
  * Returns 409 if username is already taken.
  */
-router.post('/register', asyncHandler(async (req, res) => {
+router.post('/register', loginRateLimit, asyncHandler(async (req, res) => {
   const { username, password } = req.body || {};
 
   // Input validation — reject empty or non-string values
   if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
-    return res.status(400).json({ error: 'Username and password are required' });
+    return res.status(400).json({ code: 'validation_error', message: 'Username and password are required' });
   }
 
   // Length constraints
   if (username.length < 2 || username.length > 32) {
-    return res.status(400).json({ error: 'Username must be between 2 and 32 characters' });
+    return res.status(400).json({ code: 'validation_error', message: 'Username must be between 2 and 32 characters' });
   }
 
   if (password.length < 4) {
-    return res.status(400).json({ error: 'Password must be at least 4 characters' });
+    return res.status(400).json({ code: 'validation_error', message: 'Password must be at least 4 characters' });
   }
 
   const db = getDb();
@@ -73,7 +81,7 @@ router.post('/register', asyncHandler(async (req, res) => {
   // Check for duplicate username
   const existing = db.prepare('SELECT id FROM users WHERE username = ?').get(username);
   if (existing) {
-    return res.status(409).json({ error: 'Username already taken' });
+    return res.status(409).json({ code: 'username_taken', message: 'Username already taken' });
   }
 
   // Hash password with bcrypt (12 rounds — good balance of security and speed for POC)
@@ -81,10 +89,19 @@ router.post('/register', asyncHandler(async (req, res) => {
   const id = uuidv4();
   const createdAt = new Date().toISOString();
 
-  // Insert user record
-  db.prepare(
-    'INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)'
-  ).run(id, username, passwordHash, createdAt);
+  // Insert user record. The duplicate check above is not atomic with this
+  // insert (bcrypt.hash yields the event loop), so concurrent registrations
+  // with the same username can still hit the UNIQUE constraint → 409, not 500.
+  try {
+    db.prepare(
+      'INSERT INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)'
+    ).run(id, username, passwordHash, createdAt);
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ code: 'username_taken', message: 'Username already taken' });
+    }
+    throw err;
+  }
 
   // Log the user in immediately after registration (new session ID)
   establishUserSession(req, res, { id, username }, 201);
@@ -102,11 +119,11 @@ router.post('/register', asyncHandler(async (req, res) => {
  * Returns 401 with generic "Invalid credentials" on failure (does NOT
  * reveal whether the username exists — prevents user enumeration).
  */
-router.post('/login', asyncHandler(async (req, res) => {
+router.post('/login', loginRateLimit, asyncHandler(async (req, res) => {
   const { username, password } = req.body || {};
 
   if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
+    return res.status(400).json({ code: 'validation_error', message: 'Username and password are required' });
   }
 
   const db = getDb();
@@ -118,7 +135,7 @@ router.post('/login', asyncHandler(async (req, res) => {
   const passwordHash = user?.password_hash || DUMMY_PASSWORD_HASH;
   const valid = await bcrypt.compare(password, passwordHash);
   if (!user || !valid) {
-    return res.status(401).json({ error: 'Invalid credentials' });
+    return res.status(401).json({ code: 'invalid_credentials', message: 'Invalid credentials' });
   }
 
   establishUserSession(req, res, user, 200);
@@ -133,7 +150,7 @@ router.post('/login', asyncHandler(async (req, res) => {
 router.post('/logout', (req, res) => {
   req.session.destroy((err) => {
     if (err) {
-      return res.status(500).json({ error: 'Logout failed' });
+      return res.status(500).json({ code: 'logout_failed', message: 'Logout failed' });
     }
     // Clear the cookie on the client side
     res.clearCookie('connect.sid');

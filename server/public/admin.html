@@ -118,13 +118,9 @@
   </div>
 
   <script>
-    let apiKey = sessionStorage.getItem('adminKey') || '';
-
-    if (apiKey) {
-      document.getElementById('loginCard').classList.add('hidden');
-      document.getElementById('panelContent').classList.remove('hidden');
-      loadData();
-    }
+    // Admin key is kept in memory only (never persisted to storage — any
+    // future XSS could read sessionStorage). Re-enter it after a reload.
+    let apiKey = '';
 
     async function authenticate() {
       const key = document.getElementById('adminKey').value.trim();
@@ -136,7 +132,6 @@
           headers: { 'x-admin-key': apiKey },
         });
         if (res.ok) {
-          sessionStorage.setItem('adminKey', key);
           document.getElementById('loginCard').classList.add('hidden');
           document.getElementById('panelContent').classList.remove('hidden');
           document.getElementById('authError').classList.add('hidden');
@@ -178,7 +173,6 @@
           </tr>
         `).join('');
       } catch {
-        sessionStorage.removeItem('adminKey');
         location.reload();
       }
     }

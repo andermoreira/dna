@@ -6,7 +6,7 @@
  * JavaScript cannot access.
  *
  * What it does:
- *   1. Generates a 256-bit secret key on first startup (stored in /tmp)
+ *   1. Generates a 256-bit secret key on first startup (stored in ~/.pocdna)
  *   2. Collects 15 OS-level attributes (CPU, hostname, RAM, network, apps...)
  *   3. Signs the payload with HMAC-SHA256 using the secret key
  *   4. Serves the signed payload over HTTPS on localhost:30900
@@ -44,12 +44,23 @@ import { execSync } from 'child_process';
 
 // ---------------------------------------------------------------------------
 // Configuration
+//
+// State lives in ~/.pocdna (0700) rather than os.tmpdir(): /tmp is wiped on
+// reboot (and periodically on macOS), which would silently invalidate the
+// registered terminal by destroying its secret key.
 // ---------------------------------------------------------------------------
 const PORT = 30900;
-const SECRET_KEY_PATH = process.env.SECRET_KEY_PATH || path.join(os.tmpdir(), 'pocdna-secret.key');
-const CERT_PATH = process.env.CERT_PATH || path.join(os.tmpdir(), 'pocdna-cert.pem');
-const KEY_PATH = process.env.KEY_PATH || path.join(os.tmpdir(), 'pocdna-key.pem');
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,http://127.0.0.1:3000')
+const STATE_DIR = process.env.POCDNA_DIR || path.join(os.homedir(), '.pocdna');
+fs.mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+
+const SECRET_KEY_PATH = process.env.SECRET_KEY_PATH || path.join(STATE_DIR, 'secret.key');
+const CERT_PATH = process.env.CERT_PATH || path.join(STATE_DIR, 'cert.pem');
+const KEY_PATH = process.env.KEY_PATH || path.join(STATE_DIR, 'key.pem');
+const DEFAULT_ORIGINS = [
+  'https://localhost:3000', 'https://127.0.0.1:3000',
+  'http://localhost:3000', 'http://127.0.0.1:3000',
+].join(',');
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || DEFAULT_ORIGINS)
   .split(',')
   .map(origin => origin.trim())
   .filter(Boolean);
@@ -61,7 +72,7 @@ const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:3000,h
 // value generated once per daemon installation. The daemon uses it to sign
 // every fingerprint payload with HMAC-SHA256.
 //
-// Production would store this in a TPM/HSM. POC stores it in /tmp with
+// Production would store this in a TPM/HSM. POC stores it in ~/.pocdna with
 // file permissions 0600 (owner read/write only).
 // ---------------------------------------------------------------------------
 

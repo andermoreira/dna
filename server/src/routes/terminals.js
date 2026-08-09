@@ -1,11 +1,14 @@
 /**
  * Terminal Registration & Verification Routes
  *
- * Endpoints:
+ * Endpoints (default router, mounted at /api/auth):
  *   POST /api/auth/register-terminal — register current terminal (3-layer FP)
+ *   GET  /api/auth/verify-nonce      — issue a single-use nonce for verification
  *   POST /api/auth/verify-terminal   — verify current terminal against registered ones
- *   GET  /api/auth/user/terminals    — list user's registered terminals
- *   DELETE /api/auth/user/terminals/:id — remove (revoke) a terminal
+ *
+ * Endpoints (userTerminalsRouter, mounted at /api/user/terminals — spec contract):
+ *   GET    /api/user/terminals             — list user's registered terminals
+ *   DELETE /api/user/terminals/:terminalId — remove (revoke) a terminal
  *
  * All endpoints require authentication (requireAuth middleware).
  *
@@ -13,11 +16,12 @@
  *   1. Browser collects Layer 1 (Canvas, WebGL, Audio...) and Layer 2 (daemon)
  *   2. POSTs both to /api/auth/register-terminal
  *   3. Server validates Layer 1 (hash and store), Layer 2 (validate HMAC), Layer 3 (JA4)
- *   4. Stores composite fingerprint in SQLite
+ *   4. Stores composite fingerprint in SQLite. Only the 10 fuzzy-match browser
+ *      signals are persisted; the raw daemon payload is never stored (privacy)
  *
  * Verification flow:
- *   1. Browser collects current fingerprint
- *   2. POSTs to /api/auth/verify-terminal
+ *   1. Browser requests a nonce (GET /verify-nonce) — replay protection
+ *   2. Browser collects current fingerprint, POSTs to /api/auth/verify-terminal
  *   3. Server loads all user's terminals, runs fuzzy matching across all 3 layers
  *   4. Layer availability is based on what each terminal registered — omitting a
  *      registered layer (e.g. daemon payload) counts as failure, not as absent
@@ -25,19 +29,35 @@
  *   6. Session is updated with the terminal ID for subsequent sensitive actions
  */
 
+import crypto from 'crypto';
 import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 import {
   hashComponents,
   fuzzyMatchBrowserFP,
   validateDaemonHmac,
   computeConfidence,
+  pickBrowserSignals,
+  pickStableDaemonFields,
 } from '../services/fingerprint.js';
+import { encryptSecret, decryptSecret } from '../services/secret-vault.js';
 import { setTerminalSession } from '../middleware/requireTerminal.js';
+import { logEvent } from '../log.js';
 
 const router = Router();
+
+/** Verification nonces are single-use and expire after this window. */
+const NONCE_MAX_AGE_MS = 5 * 60 * 1000;
+
+// Spec: 10 registrations per user per hour
+const registerRateLimit = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 10,
+  keyFn: (req) => `register-terminal:${req.user.id}`,
+});
 
 /**
  * POST /api/auth/register-terminal
@@ -47,9 +67,11 @@ const router = Router();
  * Request body:
  *   { label, browserFP, daemonPayload?, daemonSignature?, daemonSecret? }
  *
- * Layer 1 (browser FP) — always required. Components are hashed and stored.
+ * Layer 1 (browser FP) — always required. Only the 10 fuzzy-match signals are
+ *   hashed and stored (userAgent, languages etc. are discarded).
  * Layer 2 (daemon FP) — optional. If provided, HMAC signature is validated
- *   against the daemonSecret before storing.
+ *   against the daemonSecret before storing. The secret is encrypted at rest;
+ *   the payload hash covers only stable fields and the raw payload is dropped.
  * Layer 3 (TLS JA4)   — extracted by JA4 middleware from the request context.
  *
  * Business rules:
@@ -57,17 +79,23 @@ const router = Router();
  *   - Duplicate browser fingerprint hash → 409 (already registered)
  *   - Invalid daemon HMAC → 400 (check the secret key)
  */
-router.post('/register-terminal', requireAuth, (req, res) => {
+router.post('/register-terminal', requireAuth, registerRateLimit, (req, res) => {
   const { label, browserFP, daemonPayload, daemonSignature, daemonSecret } = req.body || {};
 
   // Validate terminal label
   if (!label || typeof label !== 'string' || label.trim().length === 0 || label.length > 64) {
-    return res.status(400).json({ error: 'Terminal label is required (max 64 characters)' });
+    return res.status(400).json({
+      code: 'invalid_label',
+      message: 'Terminal label is required (max 64 characters)',
+    });
   }
 
   // Validate browser fingerprint (Layer 1 — always required)
   if (!browserFP || !browserFP.visitorId || !browserFP.components) {
-    return res.status(400).json({ error: 'Browser fingerprint is required' });
+    return res.status(400).json({
+      code: 'browser_fp_required',
+      message: 'Browser fingerprint is required',
+    });
   }
 
   const db = getDb();
@@ -79,41 +107,50 @@ router.post('/register-terminal', requireAuth, (req, res) => {
   ).get(req.user.id);
   if (count.count >= 5) {
     return res.status(403).json({
-      error: 'Maximum of 5 registered terminals reached. Remove an existing one first.',
+      code: 'terminal_limit_reached',
+      message: 'Maximum of 5 registered terminals reached. Remove an existing one first.',
     });
   }
 
+  // Persist only the signals used for fuzzy matching (privacy: no userAgent/languages)
+  const browserSignals = pickBrowserSignals(browserFP.components);
+
   // Check for duplicate terminal (same browser fingerprint)
-  const browserFpHash = hashComponents(browserFP.components);
+  const browserFpHash = hashComponents(browserSignals);
   const existing = db.prepare(
     'SELECT id FROM terminals WHERE user_id = ? AND browser_fp_hash = ? AND revoked_at IS NULL'
   ).get(req.user.id, browserFpHash);
   if (existing) {
-    return res.status(409).json({ error: 'This terminal is already registered' });
+    return res.status(409).json({
+      code: 'terminal_already_registered',
+      message: 'This terminal is already registered',
+    });
   }
 
   // Process daemon data (Layer 2) if provided
   let daemonFpHash = null;
-  let daemonFpData = null;
-  let daemonSecretKey = null;
+  let encryptedDaemonSecret = null;
 
   if (daemonPayload && daemonSignature && daemonSecret) {
     // Validate HMAC signature before trusting the daemon data
     const valid = validateDaemonHmac(daemonPayload, daemonSignature, daemonSecret);
     if (!valid) {
       return res.status(400).json({
-        error: 'Daemon signature validation failed. Check the secret key.',
+        code: 'invalid_daemon_signature',
+        message: 'Daemon signature validation failed. Check the secret key.',
       });
     }
-    daemonFpHash = hashComponents(daemonPayload);
-    daemonFpData = JSON.stringify(daemonPayload);
-    daemonSecretKey = daemonSecret;
+    // Hash only stable fields (freemem/uptime/timestamp would make it useless).
+    // The raw payload is never persisted — Layer 2 verification is HMAC key
+    // possession, not payload comparison.
+    daemonFpHash = hashComponents(pickStableDaemonFields(daemonPayload));
+    encryptedDaemonSecret = encryptSecret(daemonSecret);
   }
 
   const terminalId = uuidv4();
   const ja4Hash = req.ja4?.hash || null;
 
-  // Store terminal record
+  // Store terminal record (daemon_fp_data intentionally null — see above)
   db.prepare(`
     INSERT INTO terminals
       (id, user_id, label, browser_fp_hash, browser_fp_data,
@@ -122,15 +159,15 @@ router.post('/register-terminal', requireAuth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     terminalId, req.user.id, label.trim(), browserFpHash,
-    JSON.stringify(browserFP.components), daemonFpHash, daemonFpData,
+    JSON.stringify(browserSignals), daemonFpHash, null,
     ja4Hash, now, now
   );
 
-  // Store daemon secret key (for future HMAC validation) if daemon was used
-  if (daemonSecretKey) {
+  // Store daemon secret key (encrypted at rest) if daemon was used
+  if (encryptedDaemonSecret) {
     db.prepare(
       'INSERT INTO daemon_secrets (terminal_id, secret_key, created_at) VALUES (?, ?, ?)'
-    ).run(terminalId, daemonSecretKey, now);
+    ).run(terminalId, encryptedDaemonSecret, now);
   }
 
   // Log audit event
@@ -141,21 +178,22 @@ router.post('/register-terminal', requireAuth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     uuidv4(), req.user.id, terminalId, 'REGISTER', 1,
-    JSON.stringify({ browser: true, daemon: !!daemonSecretKey, tls: !!ja4Hash }),
+    JSON.stringify({ browser: true, daemon: !!daemonFpHash, tls: !!ja4Hash }),
     req.ip || '127.0.0.1', req.get('user-agent') || '', ja4Hash, now
   );
 
-  console.log(
-    `[terminal.registered] user=${req.user.id} terminal=${terminalId} ` +
-    `daemon=${!!daemonSecretKey} ja4=${!!ja4Hash}`
-  );
+  logEvent('terminal.registered', {
+    user_id: req.user.id,
+    terminal_id: terminalId,
+    layers: { browser: true, daemon: !!daemonFpHash, tls: !!ja4Hash },
+  });
 
   res.status(201).json({
     terminalId,
     label: label.trim(),
     layers: {
       browser: true,
-      daemon: !!daemonSecretKey,
+      daemon: !!daemonFpHash,
       tls: !!ja4Hash,
     },
     registeredAt: now,
@@ -163,9 +201,37 @@ router.post('/register-terminal', requireAuth, (req, res) => {
 });
 
 /**
+ * GET /api/auth/verify-nonce
+ *
+ * Issues a single-use nonce that must accompany the next verify-terminal
+ * request from this session (threat model: fingerprint replay protection).
+ */
+router.get('/verify-nonce', requireAuth, (req, res) => {
+  const nonce = crypto.randomBytes(16).toString('hex');
+  req.session.verifyNonce = { value: nonce, issuedAt: Date.now() };
+  res.json({ nonce });
+});
+
+/** Consumes the session nonce; returns true when the provided value is valid. */
+function consumeVerifyNonce(req, nonce) {
+  const stored = req.session.verifyNonce;
+  req.session.verifyNonce = null;
+
+  if (!stored || typeof nonce !== 'string') return false;
+  if (Date.now() - stored.issuedAt > NONCE_MAX_AGE_MS) return false;
+
+  const a = Buffer.from(stored.value);
+  const b = Buffer.from(nonce);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+/**
  * POST /api/auth/verify-terminal
  *
  * Checks if the current terminal matches any of the user's registered terminals.
+ *
+ * Requires a `nonce` previously issued by GET /verify-nonce (single-use) so a
+ * captured verification request cannot be replayed indefinitely.
  *
  * For each registered terminal, the server:
  *   1. Fuzzy-matches the browser fingerprint (weighted Jaccard per signal)
@@ -178,10 +244,20 @@ router.post('/register-terminal', requireAuth, (req, res) => {
  * On success, the session is updated with the terminal ID.
  */
 router.post('/verify-terminal', requireAuth, (req, res) => {
-  const { browserFP, daemonPayload, daemonSignature } = req.body || {};
+  const { browserFP, daemonPayload, daemonSignature, nonce } = req.body || {};
 
   if (!browserFP || !browserFP.components) {
-    return res.status(400).json({ error: 'Browser fingerprint is required' });
+    return res.status(400).json({
+      code: 'browser_fp_required',
+      message: 'Browser fingerprint is required',
+    });
+  }
+
+  if (!consumeVerifyNonce(req, nonce)) {
+    return res.status(400).json({
+      code: 'nonce_invalid',
+      message: 'A valid verification nonce is required. Request one at /api/auth/verify-nonce.',
+    });
   }
 
   const db = getDb();
@@ -212,8 +288,9 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
     // Layer 2: required when terminal registered with daemon
     let daemonValid = null;
     if (daemonRequired) {
-      daemonValid = (daemonPayload && daemonSignature)
-        ? validateDaemonHmac(daemonPayload, daemonSignature, term.secret_key)
+      const secretKey = decryptSecret(term.secret_key);
+      daemonValid = (daemonPayload && daemonSignature && secretKey)
+        ? validateDaemonHmac(daemonPayload, daemonSignature, secretKey)
         : false;
     }
 
@@ -252,13 +329,16 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
       req.ip || '127.0.0.1', req.get('user-agent') || '', req.ja4?.hash || null, now
     );
 
-    console.log(
-      `[terminal.verified] user=${req.user.id} terminal=${bestMatch.terminalId} ` +
-      `confidence=${bestMatch.confidence.toFixed(2)}`
-    );
+    logEvent('terminal.verified', {
+      user_id: req.user.id,
+      terminal_id: bestMatch.terminalId,
+      confidence: Number(bestMatch.confidence.toFixed(2)),
+      layers: bestMatch.layers,
+    });
 
-    // Store verified terminal ID in session for subsequent sensitive actions
-    setTerminalSession(req, bestMatch.terminalId);
+    // Store verified terminal ID + layer results in session for subsequent
+    // sensitive actions (the guard requires layers.daemon === true)
+    setTerminalSession(req, bestMatch.terminalId, bestMatch.layers);
 
     return res.json({
       known: true,
@@ -283,9 +363,11 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
     req.ip || '127.0.0.1', req.get('user-agent') || '', req.ja4?.hash || null, now
   );
 
-  console.log(
-    `[terminal.mismatch] user=${req.user.id} best_confidence=${bestConf.toFixed(2)}`
-  );
+  logEvent('terminal.mismatch', {
+    user_id: req.user.id,
+    best_confidence: Number(bestConf.toFixed(2)),
+    layers: bestLayers,
+  });
 
   return res.json({
     known: false,
@@ -297,13 +379,18 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// User terminal management — mounted at /api/user/terminals (spec contract)
+// ---------------------------------------------------------------------------
+export const userTerminalsRouter = Router();
+
 /**
- * GET /api/auth/user/terminals
+ * GET /api/user/terminals
  *
  * Lists all non-revoked terminals registered for the authenticated user.
  * Returns terminal metadata only — never exposes raw fingerprint data or secrets.
  */
-router.get('/user/terminals', requireAuth, (req, res) => {
+userTerminalsRouter.get('/', requireAuth, (req, res) => {
   const db = getDb();
   const terminals = db.prepare(
     `SELECT id, label, daemon_fp_hash, registered_at, last_seen_at
@@ -324,14 +411,14 @@ router.get('/user/terminals', requireAuth, (req, res) => {
 });
 
 /**
- * DELETE /api/auth/user/terminals/:terminalId
+ * DELETE /api/user/terminals/:terminalId
  *
  * Soft-deletes a terminal by setting revoked_at. The terminal record is
  * retained for audit purposes but can no longer be used for verification.
  *
  * Soft-delete (rather than hard-delete) preserves the audit trail in auth_events.
  */
-router.delete('/user/terminals/:terminalId', requireAuth, (req, res) => {
+userTerminalsRouter.delete('/:terminalId', requireAuth, (req, res) => {
   const db = getDb();
   const now = new Date().toISOString();
 
@@ -341,7 +428,7 @@ router.delete('/user/terminals/:terminalId', requireAuth, (req, res) => {
   ).get(req.params.terminalId, req.user.id);
 
   if (!terminal) {
-    return res.status(404).json({ error: 'Terminal not found' });
+    return res.status(404).json({ code: 'terminal_not_found', message: 'Terminal not found' });
   }
 
   // Soft-delete: set revoked_at timestamp
@@ -358,9 +445,11 @@ router.delete('/user/terminals/:terminalId', requireAuth, (req, res) => {
     req.ip || '127.0.0.1', req.get('user-agent') || '', now
   );
 
-  console.log(
-    `[terminal.revoked] user=${req.user.id} terminal=${terminal.id} revoked_by=user`
-  );
+  logEvent('terminal.revoked', {
+    user_id: req.user.id,
+    terminal_id: terminal.id,
+    revoked_by: 'user',
+  });
 
   res.status(204).end();
 });

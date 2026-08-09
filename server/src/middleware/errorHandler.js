@@ -14,8 +14,9 @@ export function asyncHandler(fn) {
 
 /**
  * Central error boundary — logs internally, returns safe JSON to clients.
+ * Errors follow the { code, message } shape used by all route responses.
  */
 export function errorHandler(err, _req, res, _next) {
   console.error('[server.error]', err);
-  res.status(500).json({ error: 'internal_error' });
+  res.status(500).json({ code: 'internal_error', message: 'Internal server error' });
 }

@@ -1,6 +1,7 @@
 FROM node:20-alpine
 
-RUN apk add --no-cache python3 make g++
+# openssl: generates the server's self-signed TLS cert (JA4 layer)
+RUN apk add --no-cache python3 make g++ openssl
 
 WORKDIR /app
 

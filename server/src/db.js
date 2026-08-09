@@ -15,6 +15,7 @@
  */
 
 import Database from 'better-sqlite3';
+import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
@@ -31,9 +32,10 @@ let db;
 export function getDb() {
   if (db) return db;
 
-  // Database file: server/data/pocdna.db
-  const dbPath = join(__dirname, '..', 'data', 'pocdna.db');
-  db = new Database(dbPath);
+  // Database file: server/data/pocdna.db (dir may not exist on a fresh clone)
+  const dataDir = join(__dirname, '..', 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  db = new Database(join(dataDir, 'pocdna.db'));
 
   // WAL mode: writers don't block readers, better concurrent performance
   db.pragma('journal_mode = WAL');
@@ -56,10 +58,10 @@ export function getDb() {
       id TEXT PRIMARY KEY,                  -- UUID v4
       user_id TEXT NOT NULL REFERENCES users(id), -- Owner
       label TEXT NOT NULL,                  -- User-given name (e.g. "My Laptop")
-      browser_fp_hash TEXT NOT NULL,        -- SHA-256 of Layer 1 components
-      browser_fp_data TEXT NOT NULL,        -- JSON: full Layer 1 components
-      daemon_fp_hash TEXT,                  -- SHA-256 of Layer 2 payload (null if no daemon)
-      daemon_fp_data TEXT,                  -- JSON: full Layer 2 payload
+      browser_fp_hash TEXT NOT NULL,        -- SHA-256 of Layer 1 fuzzy-match signals
+      browser_fp_data TEXT NOT NULL,        -- JSON: Layer 1 fuzzy-match signals only (no userAgent/languages)
+      daemon_fp_hash TEXT,                  -- SHA-256 of stable Layer 2 fields (null if no daemon)
+      daemon_fp_data TEXT,                  -- Unused (kept for schema compat) — raw daemon payload is never persisted
       ja4_hash TEXT,                        -- Layer 3 TLS fingerprint (null if unavailable)
       registered_at TEXT NOT NULL,          -- ISO 8601
       last_seen_at TEXT NOT NULL,           -- ISO 8601 — updated on each successful verify
@@ -68,7 +70,7 @@ export function getDb() {
 
     CREATE TABLE IF NOT EXISTS daemon_secrets (
       terminal_id TEXT PRIMARY KEY REFERENCES terminals(id), -- 1:1 with terminal
-      secret_key TEXT NOT NULL,             -- Base64-encoded 256-bit HMAC key
+      secret_key TEXT NOT NULL,             -- HMAC key encrypted at rest (AES-256-GCM, see secret-vault.js)
       created_at TEXT NOT NULL              -- ISO 8601
     );
 

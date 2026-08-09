@@ -34,6 +34,58 @@ import crypto from 'crypto';
 export const MAX_SKEW_MS = 60_000;
 
 /**
+ * Browser signal weights — sum equals 1.0. Also acts as the allowlist of
+ * browser components the server persists (privacy: everything else, e.g.
+ * userAgent/languages, is discarded after the request).
+ */
+export const BROWSER_SIGNAL_WEIGHTS = {
+  canvas: 0.25,
+  webgl: 0.20,
+  audio: 0.15,
+  platform: 0.10,
+  screen: 0.10,
+  fonts: 0.08,
+  timezone: 0.05,
+  hardwareConcurrency: 0.04,
+  touchSupport: 0.02,
+  plugins: 0.01,
+};
+
+/**
+ * Daemon payload fields that are stable across reboots. Volatile fields
+ * (freemem, uptime, timestamp) are excluded so the stored hash is meaningful.
+ */
+export const STABLE_DAEMON_FIELDS = [
+  'hostname', 'platform', 'arch', 'cpus', 'cpuCores', 'totalmem',
+  'networkInterfaces', 'username', 'homedir', 'nodeVersion', 'installedApps',
+];
+
+/**
+ * Keeps only the browser signals used for fuzzy matching.
+ * The server never persists browser components outside this allowlist.
+ */
+export function pickBrowserSignals(components) {
+  const picked = {};
+  for (const signal of Object.keys(BROWSER_SIGNAL_WEIGHTS)) {
+    picked[signal] = components[signal] === undefined ? null : components[signal];
+  }
+  return picked;
+}
+
+/**
+ * Keeps only the stable daemon fields, for hashing. The raw payload is
+ * never persisted — Layer 2 verification is HMAC key possession, so the
+ * hash only marks that the terminal registered with a daemon.
+ */
+export function pickStableDaemonFields(payload) {
+  const picked = {};
+  for (const field of STABLE_DAEMON_FIELDS) {
+    if (payload[field] !== undefined) picked[field] = payload[field];
+  }
+  return picked;
+}
+
+/**
  * Recursively sorts object keys for deterministic JSON serialization.
  * Must match the daemon's sortKeys implementation.
  */
@@ -91,37 +143,23 @@ export function hashComponents(components) {
  * @returns {number} 0.0 (completely different) to 1.0 (exact match)
  */
 export function fuzzyMatchBrowserFP(stored, candidate) {
-  // Signal weights — sum should equal 1.0
-  const weights = {
-    canvas: 0.25,
-    webgl: 0.20,
-    audio: 0.15,
-    platform: 0.10,
-    screen: 0.10,
-    fonts: 0.08,
-    timezone: 0.05,
-    hardwareConcurrency: 0.04,
-    touchSupport: 0.02,
-    plugins: 0.01,
-  };
-
   let score = 0;
   let totalWeight = 0;
 
-  for (const [signal, weight] of Object.entries(weights)) {
+  for (const [signal, weight] of Object.entries(BROWSER_SIGNAL_WEIGHTS)) {
     totalWeight += weight;
 
     const storedVal = stored[signal];
     const candVal = candidate[signal];
 
-    // Both null → signal unavailable on both sides → full credit
-    if (storedVal === null && candVal === null) {
+    // Both absent (null or undefined) → signal unavailable on both sides → full credit
+    if (storedVal == null && candVal == null) {
       score += weight;
       continue;
     }
 
-    // Only one side null → cannot compare → no credit
-    if (storedVal === null || candVal === null) {
+    // Only one side absent → cannot compare → no credit
+    if (storedVal == null || candVal == null) {
       continue;
     }
 

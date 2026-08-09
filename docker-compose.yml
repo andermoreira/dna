@@ -6,7 +6,10 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=3000
-      - ADMIN_KEY=pocdna-admin-secret
+      # Secrets come from .env (see .env.example) — never commit real values
+      - ADMIN_KEY=${ADMIN_KEY:-}
+      - SESSION_SECRET=${SESSION_SECRET:-}
+      - SECRET_ENC_KEY=${SECRET_ENC_KEY:-}
     volumes:
       - ./server/src:/app/src:ro
       - ./server/public:/app/public:ro

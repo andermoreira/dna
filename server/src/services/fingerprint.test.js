@@ -6,6 +6,10 @@ import {
   validateDaemonHmac,
   sortKeys,
   hashComponents,
+  fuzzyMatchBrowserFP,
+  pickBrowserSignals,
+  pickStableDaemonFields,
+  BROWSER_SIGNAL_WEIGHTS,
   MAX_SKEW_MS,
 } from './fingerprint.js';
 
@@ -93,6 +97,60 @@ describe('hashComponents', () => {
     const a = hashComponents({ z: 1, nested: { b: 2, a: 1 }, a: 0 });
     const b = hashComponents({ a: 0, nested: { a: 1, b: 2 }, z: 1 });
     assert.equal(a, b);
+  });
+});
+
+describe('fuzzyMatchBrowserFP', () => {
+  const fullFP = {
+    canvas: 'c', webgl: 'w', audio: 'a', platform: 'MacIntel',
+    screen: '1920x1080', fonts: ['Arial'], timezone: 'UTC',
+    hardwareConcurrency: 8, touchSupport: false, plugins: [],
+  };
+
+  it('returns 1.0 for identical fingerprints', () => {
+    assert.equal(fuzzyMatchBrowserFP(fullFP, { ...fullFP }), 1);
+  });
+
+  it('treats undefined like null — signal missing on one side gets no credit', () => {
+    const candidate = { ...fullFP };
+    delete candidate.canvas; // undefined on candidate side, present on stored
+    const score = fuzzyMatchBrowserFP(fullFP, candidate);
+    assert.ok(Math.abs(score - (1 - BROWSER_SIGNAL_WEIGHTS.canvas)) < 1e-9);
+  });
+
+  it('gives full credit when a signal is unavailable on both sides', () => {
+    const stored = { ...fullFP, audio: null };
+    const candidate = { ...fullFP };
+    delete candidate.audio; // null vs undefined → both unavailable
+    assert.equal(fuzzyMatchBrowserFP(stored, candidate), 1);
+  });
+});
+
+describe('pickBrowserSignals', () => {
+  it('keeps only fuzzy-match signals and drops PII-bearing extras', () => {
+    const picked = pickBrowserSignals({
+      canvas: 'c', userAgent: 'Mozilla/5.0 ...', languages: ['pt-BR'], _errors: [],
+    });
+    assert.equal(picked.canvas, 'c');
+    assert.equal('userAgent' in picked, false);
+    assert.equal('languages' in picked, false);
+    assert.deepEqual(Object.keys(picked).sort(), Object.keys(BROWSER_SIGNAL_WEIGHTS).sort());
+  });
+
+  it('normalizes missing signals to null (stable hashing)', () => {
+    const picked = pickBrowserSignals({});
+    for (const signal of Object.keys(BROWSER_SIGNAL_WEIGHTS)) {
+      assert.equal(picked[signal], null);
+    }
+  });
+});
+
+describe('pickStableDaemonFields', () => {
+  it('drops volatile fields so the stored hash is reproducible', () => {
+    const picked = pickStableDaemonFields({
+      hostname: 'h', platform: 'darwin', freemem: 123, uptime: 42, timestamp: Date.now(),
+    });
+    assert.deepEqual(picked, { hostname: 'h', platform: 'darwin' });
   });
 });
 

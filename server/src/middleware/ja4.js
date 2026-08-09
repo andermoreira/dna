@@ -18,59 +18,45 @@
  *   t13 = TLS 1.3
  *   d1516h2 = cipher + extension profile
  *
- * Uses the `read-tls-client-hello` npm package (2M+ downloads/week) which
- * parses the raw TLS ClientHello bytes from the Node.js socket.
+ * How it works: index.js applies `trackClientHellos(httpsServer)` from the
+ * `read-tls-client-hello` package, which parses the raw ClientHello bytes
+ * BEFORE the TLS handshake and attaches the result (including the JA4 hash)
+ * to every socket as `socket.tlsClientHello`. This middleware only copies
+ * that value to `req.ja4`.
  *
  * Limitations in POC:
  *   - Only works when Express terminates TLS directly (not behind nginx/ALB)
- *   - In Docker dev mode (plain HTTP), socket.encrypted is false → req.ja4 = null
+ *   - When the server falls back to plain HTTP (no openssl available),
+ *     req.ja4 = null and the JA4 layer is disabled
  *   - Production would extract JA4 from a reverse proxy header or edge function
  */
 
-import { readTlsClientHello } from 'read-tls-client-hello';
+import { logEvent } from '../log.js';
 
 /**
- * Express middleware — extracts JA4 hash from the TLS socket.
- *
- * Attaches `req.ja4` as { hash: string, raw: {...} } on success,
- * or `req.ja4 = null` on failure. Never blocks the request.
- *
- * Must be applied before route handlers that use JA4.
- * Applied globally in index.js.
+ * Express middleware — copies the JA4 hash captured by trackClientHellos
+ * from the TLS socket to `req.ja4` ({ hash } or null). Never blocks the request.
  */
 export function extractJa4(req, _res, next) {
-  try {
-    // Access the raw TCP socket from the HTTP request
-    const socket = req.socket || req.connection;
+  const socket = req.socket;
+  const hello = socket?.tlsClientHello;
 
-    // Only attempt extraction on encrypted (TLS) connections
-    if (!socket || !socket.encrypted) {
-      req.ja4 = null;
-      return next();
+  if (hello?.ja4) {
+    req.ja4 = { hash: hello.ja4 };
+    // Log once per socket (sockets are reused across keep-alive requests)
+    if (!socket.ja4Logged) {
+      socket.ja4Logged = true;
+      logEvent('ja4.extracted', {
+        ja4_hash: hello.ja4,
+        user_agent: req.get('user-agent') || '',
+      });
     }
-
-    // Parse the TLS ClientHello from the raw socket bytes
-    const hello = readTlsClientHello(socket);
-
-    if (hello && hello.ja4) {
-      // Store JA4 hash and raw parsed data for downstream use
-      req.ja4 = {
-        hash: hello.ja4,
-        raw: {
-          version: hello.version,
-          ciphers: hello.ciphers,
-          extensions: hello.extensions,
-        },
-      };
-      console.log(`[ja4] extracted hash: ${hello.ja4}`);
-    } else {
-      req.ja4 = null;
-      console.log('[ja4] extraction returned no hash');
-    }
-  } catch (err) {
-    // Graceful degradation — don't break the request if JA4 fails
+  } else {
     req.ja4 = null;
-    console.log(`[ja4] extraction failed: ${err.message}`);
+    if (socket?.encrypted && !socket.ja4Logged) {
+      socket.ja4Logged = true;
+      logEvent('ja4.extraction_failed', { reason: 'no_client_hello_on_tls_socket' });
+    }
   }
 
   next();

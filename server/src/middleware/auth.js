@@ -14,6 +14,7 @@
  */
 
 import { getDb } from '../db.js';
+import { logEvent } from '../log.js';
 
 /**
  * Middleware: ensures the request has a valid authenticated session.
@@ -27,7 +28,7 @@ import { getDb } from '../db.js';
 export function requireAuth(req, res, next) {
   // Check session exists and has userId
   if (!req.session || !req.session.userId) {
-    return res.status(401).json({ error: 'Authentication required' });
+    return res.status(401).json({ code: 'auth_required', message: 'Authentication required' });
   }
 
   // Load user from database (verifies the user still exists — not deleted)
@@ -38,8 +39,11 @@ export function requireAuth(req, res, next) {
 
   if (!user) {
     // Session references a deleted user — destroy the invalid session
-    req.session.destroy();
-    return res.status(401).json({ error: 'Authentication required' });
+    req.session.destroy((err) => {
+      if (err) logEvent('session.destroy_failed', { err: err.message });
+      res.status(401).json({ code: 'auth_required', message: 'Authentication required' });
+    });
+    return;
   }
 
   // Attach user to request for downstream handlers

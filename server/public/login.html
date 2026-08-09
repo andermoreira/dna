@@ -167,7 +167,7 @@
         if (res.ok) {
           window.location.href = '/';
         } else {
-          showError(data.error || 'Authentication failed');
+          showError(data.message || 'Authentication failed');
         }
       } catch (err) {
         showError('Connection failed. Is the server running?');
