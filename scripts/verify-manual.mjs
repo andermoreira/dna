@@ -183,16 +183,17 @@ async function main() {
     'verify without nonce → 400 nonce_invalid (M4 fix)'
   );
 
-  // --- Happy path: fresh daemon payload (valid timestamp) + matching browser FP ---
-  const freshDaemon = await fetch(`${DAEMON}/fingerprint`).then(r => r.json());
+  // --- Happy path: fresh daemon payload with challenge nonce + matching browser FP ---
+  const nonce = await fetchNonce(sessionCookie);
+  const freshDaemon = await fetch(`${DAEMON}/fingerprint?challenge=${encodeURIComponent(nonce)}`).then(r => r.json());
   const verifyOk = await request(`${BASE}/api/auth/verify-terminal`, {
     method: 'POST',
     cookie: sessionCookie,
     body: {
       browserFP,
-      daemonPayload: freshDaemon.payload,   // new timestamp for replay window
+      daemonPayload: freshDaemon.payload,   // new timestamp + challenge for replay protection
       daemonSignature: freshDaemon.signature,
-      nonce: await fetchNonce(sessionCookie),
+      nonce,
     },
   });
   assert(verifyOk.json?.known === true, 'verify with daemon → known: true');
@@ -252,6 +253,12 @@ async function main() {
     sensitiveWeak.status === 403 && sensitiveWeak.json?.code === 'daemon_layer_required',
     'sensitive action blocked on weak terminal → 403 daemon_layer_required (C1b fix)'
   );
+
+  // --- Admin API security: empty/missing key must be rejected ---
+  const adminRes = await fetch(`${BASE}/api/admin/terminals`, {
+    headers: { 'x-admin-key': '' },
+  });
+  assert(adminRes.status === 401 || adminRes.status === 500, 'admin route rejects empty x-admin-key');
 
   // --- Session fixation (A5): logout + login must issue a new connect.sid ---
   const sidBefore = sessionCookie;

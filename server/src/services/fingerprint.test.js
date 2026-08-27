@@ -185,4 +185,37 @@ describe('validateDaemonHmac', () => {
 
     assert.equal(validateDaemonHmac(sorted, signature, SECRET_B64), true);
   });
+
+  it('accepts valid payload when expectedChallenge matches payload.challenge', () => {
+    const payload = {
+      hostname: 'test-host',
+      challenge: 'challenge-nonce-123',
+      timestamp: Date.now(),
+    };
+    const { payload: sorted, signature } = signPayload(payload);
+
+    assert.equal(validateDaemonHmac(sorted, signature, SECRET_B64, 'challenge-nonce-123'), true);
+  });
+
+  it('rejects payload when expectedChallenge does not match payload.challenge', () => {
+    const payload = {
+      hostname: 'test-host',
+      challenge: 'attacker-nonce',
+      timestamp: Date.now(),
+    };
+    const { payload: sorted, signature } = signPayload(payload);
+
+    assert.equal(validateDaemonHmac(sorted, signature, SECRET_B64, 'expected-session-nonce'), false);
+  });
+
+  it('rejects payload with invalid secret key length', () => {
+    const payload = {
+      hostname: 'test-host',
+      timestamp: Date.now(),
+    };
+    const { payload: sorted, signature } = signPayload(payload);
+    const shortKey = Buffer.from('short-key').toString('base64');
+
+    assert.equal(validateDaemonHmac(sorted, signature, shortKey), false);
+  });
 });

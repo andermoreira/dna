@@ -86,6 +86,14 @@ export function getDb() {
       ja4_observed TEXT,            -- JA4 hash observed at event time
       created_at TEXT NOT NULL      -- ISO 8601
     );
+
+    -- -------------------------------------------------------------------------
+    -- Performance Indexes — optimize verification lookups and audit queries
+    -- -------------------------------------------------------------------------
+    CREATE INDEX IF NOT EXISTS idx_terminals_user_active ON terminals(user_id, revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_terminals_browser_hash ON terminals(user_id, browser_fp_hash);
+    CREATE INDEX IF NOT EXISTS idx_auth_events_user ON auth_events(user_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_auth_events_terminal ON auth_events(terminal_id);
   `);
 
   return db;

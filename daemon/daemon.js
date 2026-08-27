@@ -195,10 +195,10 @@ function generateTls() {
 // ---------------------------------------------------------------------------
 
 /**
- * Sanitizes network interface data by hashing IP addresses.
+ * Sanitizes network interface data by hashing IP and MAC addresses.
  *
- * MAC addresses are preserved (useful for fingerprinting).
- * Public IPs are hashed to avoid leaking them in the fingerprint payload.
+ * MAC addresses and Public/Private IPs are hashed with SHA-256 to avoid leaking
+ * cleartext network identifiers in the payload while preserving entropy for fingerprinting.
  * Loopback addresses (127.0.0.1, ::1) are preserved as-is.
  *
  * @param {object} interfaces — os.networkInterfaces() output
@@ -213,6 +213,11 @@ function hashNetworkIPs(interfaces) {
       if (clean.address && !clean.address.includes('::1') && clean.address !== '127.0.0.1') {
         clean.address = crypto.createHash('sha256')
           .update(clean.address).digest('hex').substring(0, 16);
+      }
+      // Hash MAC addresses for privacy (LGPD/GDPR compliance)
+      if (clean.mac && clean.mac !== '00:00:00:00:00:00') {
+        clean.mac = crypto.createHash('sha256')
+          .update(`mac:${clean.mac}`).digest('hex').substring(0, 16);
       }
       return clean;
     });
@@ -272,17 +277,19 @@ function collectInstalledApps() {
  *   platform/arch     — OS and CPU architecture
  *   cpus/cpuCores     — CPU model string and core count
  *   totalmem/freemem  — RAM (total and available)
- *   networkInterfaces — MAC addresses + hashed IPs
+ *   networkInterfaces — hashed MAC addresses + hashed IPs
  *   username/homedir  — current user identity
  *   uptime            — system uptime in seconds
  *   nodeVersion       — daemon runtime version
  *   installedApps     — top 20 installed applications
  *   timestamp         — Unix epoch ms (for replay protection)
+ *   challenge         — optional verification nonce passed by the caller
  *
+ * @param {string|null} [challenge] — optional single-use challenge nonce from the server
  * @returns {object} fingerprint payload
  */
-function collectOSData() {
-  return {
+function collectOSData(challenge = null) {
+  const data = {
     hostname: os.hostname(),
     platform: os.platform(),
     arch: os.arch(),
@@ -298,6 +305,12 @@ function collectOSData() {
     installedApps: collectInstalledApps(),
     timestamp: Date.now(),
   };
+
+  if (challenge && typeof challenge === 'string' && challenge.length <= 128) {
+    data.challenge = challenge;
+  }
+
+  return data;
 }
 
 /**
@@ -334,8 +347,8 @@ const tlsCfg = generateTls();
  * Loopback binding alone does not prevent cross-origin reads from malicious pages.
  *
  * Endpoints:
- *   GET /health      — health check, returns { status: "ok" }
- *   GET /fingerprint — collects OS data, signs with HMAC, returns { payload, signature }
+ *   GET /health                  — health check, returns { status: "ok" }
+ *   GET /fingerprint?challenge=x — collects OS data, signs with HMAC, returns { payload, signature }
  */
 function setCorsHeaders(req, res) {
   const origin = req.headers.origin;
@@ -357,19 +370,24 @@ function handleRequest(req, res) {
     return;
   }
 
-  console.log(`[daemon] ${req.method} ${req.url} from ${req.socket.remoteAddress}`);
+  const parsedUrl = new URL(req.url, 'http://127.0.0.1');
+  const pathname = parsedUrl.pathname;
+
+  console.log(`[daemon] ${req.method} ${pathname} from ${req.socket.remoteAddress}`);
 
   // Health check endpoint — used by the dashboard to detect daemon availability
-  if (req.url === '/health') {
+  if (pathname === '/health') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ status: 'ok' }));
     return;
   }
 
   // Fingerprint endpoint — the core of Layer 2
-  if (req.url === '/fingerprint') {
-    // Collect OS data
-    const payload = collectOSData();
+  if (pathname === '/fingerprint') {
+    const challenge = parsedUrl.searchParams.get('challenge');
+
+    // Collect OS data, incorporating challenge if provided
+    const payload = collectOSData(challenge);
 
     // Sort keys for deterministic serialization
     const sorted = sortKeys(payload);

@@ -16,9 +16,25 @@ const MAX_TRACKED_KEYS = 10_000;
 export function rateLimit({ windowMs, max, keyFn }) {
   const buckets = new Map();
 
+  // Active periodic cleanup of expired buckets every 2 minutes
+  const cleanupTimer = setInterval(() => {
+    const now = Date.now();
+    for (const [key, bucket] of buckets) {
+      if (now >= bucket.resetAt) {
+        buckets.delete(key);
+      }
+    }
+  }, 2 * 60 * 1000);
+
+  // Unref timer so it does not keep Node.js process alive on shutdown/tests
+  if (cleanupTimer && typeof cleanupTimer.unref === 'function') {
+    cleanupTimer.unref();
+  }
+
   return (req, res, next) => {
     const now = Date.now();
 
+    // Secondary safety cleanup if limit is exceeded between intervals
     if (buckets.size > MAX_TRACKED_KEYS) {
       for (const [key, bucket] of buckets) {
         if (now >= bucket.resetAt) buckets.delete(key);

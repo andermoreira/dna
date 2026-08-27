@@ -130,10 +130,13 @@ sequenceDiagram
 
     User->>Browser: Login
     Browser->>Server: POST /api/auth/login
+    Browser->>Server: GET /api/auth/verify-nonce
+    Server-->>Browser: { nonce }
     Browser->>Browser: Fingerprint.collectAll()
-    Browser->>Daemon: GET /fingerprint
-    Browser->>Server: POST /api/auth/verify-terminal
-    Note over Server: Layer 1: match ✓<br/>Layer 2: HMAC valid ✓<br/>Layer 3: JA4 match ✓<br/>Confidence: 1.0
+    Browser->>Daemon: GET /fingerprint?challenge=<nonce>
+    Daemon-->>Browser: { payload (incl. challenge), signature }
+    Browser->>Server: POST /api/auth/verify-terminal { browserFP, daemonPayload, daemonSignature, nonce }
+    Note over Server: Layer 1: match ✓<br/>Layer 2: HMAC valid & challenge match ✓<br/>Layer 3: JA4 match ✓<br/>Confidence: 1.0
 
     Server-->>Browser: { known: true }
     Browser->>User: "Terminal Recognized"
@@ -295,7 +298,9 @@ sequenceDiagram
     Script->>Server: POST /api/auth/register-terminal
     Script->>Server: POST /api/auth/verify-terminal (no nonce)
     Note over Script,Server: 400 nonce_invalid (M4 fix)
-    Script->>Daemon: GET /fingerprint (fresh timestamp)
+    Script->>Server: GET /api/auth/verify-nonce
+    Server-->>Script: { nonce }
+    Script->>Daemon: GET /fingerprint?challenge=<nonce> (challenge-response)
     Script->>Server: POST /api/auth/verify-terminal (with daemon + nonce)
     Note over Script,Server: known: true, 3/3 layers
     Script->>Server: POST /api/actions/sensitive
@@ -310,6 +315,9 @@ sequenceDiagram
     Script->>Server: POST /api/actions/sensitive
     Note over Script,Server: 403 daemon_layer_required (C1b fix)
 
+    Script->>Server: GET /api/admin/terminals (empty x-admin-key)
+    Note over Script,Server: 401 / 500 fail-closed admin check
+
     Script->>Server: POST /api/auth/logout
     Script->>Server: POST /api/auth/login
     Note over Script,Server: connect.sid changed (A5 fix)
@@ -318,9 +326,10 @@ sequenceDiagram
 | Check | Expected |
 |---|---|
 | Verify without nonce | `400 nonce_invalid` |
-| Verify with daemon | `known: true`, sensitive action allowed |
+| Verify with daemon & challenge | `known: true`, sensitive action allowed |
 | Verify without `daemonPayload` | daemon layer fails, sensitive action `403` |
 | Browser-only ("weak") terminal | recognized, sensitive action `403` |
+| Admin with invalid/empty key | `401` or `500` fail-closed |
 | Login after logout | New `connect.sid` cookie |
 
 ## Demo Flow

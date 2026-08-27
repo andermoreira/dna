@@ -71,11 +71,11 @@ sequenceDiagram
     Express-->>Browser: { nonce } (single-use, 5 min TTL, bound to session)
 
     Browser->>Browser: Fingerprint.collectAll()
-    Browser->>Daemon: GET /fingerprint
-    Daemon-->>Browser: { payload, signature }
-    Browser->>Express: POST /api/auth/verify-terminal (+ nonce)
+    Browser->>Daemon: GET /fingerprint?challenge=<nonce>
+    Daemon-->>Browser: { payload (incl. challenge), signature }
+    Browser->>Express: POST /api/auth/verify-terminal { browserFP, daemonPayload, daemonSignature, nonce }
 
-    Note over Express: Nonce consumed (replay of this request fails with 400)
+    Note over Express: Nonce consumed & daemon challenge validated (prevents replay)
 
     Express->>DB: SELECT terminals WHERE user_id
     DB-->>Express: [{ browser_fp_data, daemon_fp_hash, secret_key (encrypted), ja4_hash }]

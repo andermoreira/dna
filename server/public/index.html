@@ -214,10 +214,13 @@
       document.getElementById('daemonDot').className = `daemon-dot ${daemonOnline ? 'online' : 'offline'}`;
     }
 
-    async function collectDaemonFP() {
+    async function collectDaemonFP(challenge = null) {
       if (!daemonOnline) return null;
       try {
-        const res = await fetch('https://127.0.0.1:30900/fingerprint', { mode: 'cors' });
+        const url = challenge
+          ? `https://127.0.0.1:30900/fingerprint?challenge=${encodeURIComponent(challenge)}`
+          : 'https://127.0.0.1:30900/fingerprint';
+        const res = await fetch(url, { mode: 'cors' });
         if (!res.ok) return null;
         const data = await res.json();
         currentDaemonData = data;
@@ -228,22 +231,26 @@
     }
 
     async function verifyTerminal() {
-      const daemonData = await collectDaemonFP();
-      const body = {
-        browserFP: currentBrowserFP,
-      };
-      if (daemonData) {
-        body.daemonPayload = daemonData.payload;
-        body.daemonSignature = daemonData.signature;
-      }
-
       try {
-        // Single-use nonce: replay protection for the verification request
+        // Step 1: Obtain a single-use verification nonce from the server
+        let nonce = null;
         const nonceRes = await fetch('/api/auth/verify-nonce');
         if (nonceRes.ok) {
-          body.nonce = (await nonceRes.json()).nonce;
+          nonce = (await nonceRes.json()).nonce;
         }
 
+        // Step 2: Request signed fingerprint from local daemon passing nonce as challenge
+        const daemonData = await collectDaemonFP(nonce);
+        const body = {
+          browserFP: currentBrowserFP,
+          nonce,
+        };
+        if (daemonData) {
+          body.daemonPayload = daemonData.payload;
+          body.daemonSignature = daemonData.signature;
+        }
+
+        // Step 3: Verify terminal on application server
         const res = await fetch('/api/auth/verify-terminal', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },

@@ -40,6 +40,10 @@ function getEncryptionKey() {
     return encryptionKey;
   }
 
+  if (process.env.NODE_ENV === 'production') {
+    console.warn('[vault.warning] SECRET_ENC_KEY is not set in production environment — generating local key file in data directory');
+  }
+
   encryptionKey = crypto.randomBytes(32);
   fs.mkdirSync(path.dirname(KEY_FILE), { recursive: true });
   fs.writeFileSync(KEY_FILE, encryptionKey, { mode: 0o600 });

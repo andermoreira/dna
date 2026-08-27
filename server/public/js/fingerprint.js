@@ -197,13 +197,13 @@ window.Fingerprint = (() => {
       canvas.width = 300;
       canvas.height = 30;
 
-      // Measure baseline widths for each base font family
+      // Measure baseline widths for each base font family (rounded to 0.1px for zoom resilience)
       ctx.font = '16px monospace';
       ctx.fillText('mmmmmmmmmmlllllllllliiiiiiiiii', 0, 15);
       const baseMeasures = {};
       for (const font of baseFonts) {
         ctx.font = `16px ${font}`;
-        baseMeasures[font] = ctx.measureText('mmmmmmmmmmlllllllllliiiiiiiiii').width;
+        baseMeasures[font] = Math.round(ctx.measureText('mmmmmmmmmmlllllllllliiiiiiiiii').width * 10) / 10;
       }
 
       // Test each font — if width differs from all base fonts, it's installed
@@ -211,7 +211,7 @@ window.Fingerprint = (() => {
       for (const font of testFonts) {
         for (const base of baseFonts) {
           ctx.font = `16px '${font}', ${base}`;
-          const width = ctx.measureText('mmmmmmmmmmlllllllllliiiiiiiiii').width;
+          const width = Math.round(ctx.measureText('mmmmmmmmmmlllllllllliiiiiiiiii').width * 10) / 10;
           if (width !== baseMeasures[base]) {
             detected.push(font);
             break;  // Font detected — move to next test font

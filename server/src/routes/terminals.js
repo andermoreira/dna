@@ -34,6 +34,7 @@ import { Router } from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 import { requireAuth } from '../middleware/auth.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
 import { rateLimit } from '../middleware/rateLimit.js';
 import {
   hashComponents,
@@ -79,7 +80,7 @@ const registerRateLimit = rateLimit({
  *   - Duplicate browser fingerprint hash → 409 (already registered)
  *   - Invalid daemon HMAC → 400 (check the secret key)
  */
-router.post('/register-terminal', requireAuth, registerRateLimit, (req, res) => {
+router.post('/register-terminal', requireAuth, registerRateLimit, asyncHandler(async (req, res) => {
   const { label, browserFP, daemonPayload, daemonSignature, daemonSecret } = req.body || {};
 
   // Validate terminal label
@@ -198,7 +199,7 @@ router.post('/register-terminal', requireAuth, registerRateLimit, (req, res) => 
     },
     registeredAt: now,
   });
-});
+}));
 
 /**
  * GET /api/auth/verify-nonce
@@ -235,7 +236,7 @@ function consumeVerifyNonce(req, nonce) {
  *
  * For each registered terminal, the server:
  *   1. Fuzzy-matches the browser fingerprint (weighted Jaccard per signal)
- *   2. Validates the daemon HMAC signature (if both have daemon data)
+ *   2. Validates the daemon HMAC signature with challenge verification
  *   3. Compares the JA4 TLS hash (if both have TLS data)
  *   4. Computes a confidence score (0.0–1.0)
  *   5. Returns the best match
@@ -243,7 +244,7 @@ function consumeVerifyNonce(req, nonce) {
  * A terminal is "known" when ≥2 of the available layers match.
  * On success, the session is updated with the terminal ID.
  */
-router.post('/verify-terminal', requireAuth, (req, res) => {
+router.post('/verify-terminal', requireAuth, asyncHandler(async (req, res) => {
   const { browserFP, daemonPayload, daemonSignature, nonce } = req.body || {};
 
   if (!browserFP || !browserFP.components) {
@@ -272,13 +273,19 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
   `).all(req.user.id);
 
   let bestMatch = null;
-  let bestConfidence = -1;
 
   // Iterate through all registered terminals to find the best match
   for (const term of terminals) {
+    let storedBrowserFP;
+    try {
+      storedBrowserFP = JSON.parse(term.browser_fp_data);
+    } catch {
+      continue;
+    }
+
     // Layer 1: fuzzy match browser fingerprint
     const browserScore = fuzzyMatchBrowserFP(
-      JSON.parse(term.browser_fp_data),
+      storedBrowserFP,
       browserFP.components
     );
 
@@ -289,8 +296,10 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
     let daemonValid = null;
     if (daemonRequired) {
       const secretKey = decryptSecret(term.secret_key);
+      // Validate signature; if payload includes challenge, ensure it matches the verification nonce
+      const expectedChallenge = daemonPayload?.challenge ? nonce : null;
       daemonValid = (daemonPayload && daemonSignature && secretKey)
-        ? validateDaemonHmac(daemonPayload, daemonSignature, secretKey)
+        ? validateDaemonHmac(daemonPayload, daemonSignature, secretKey, expectedChallenge)
         : false;
     }
 
@@ -307,9 +316,27 @@ router.post('/verify-terminal', requireAuth, (req, res) => {
       tlsMatch,
     });
 
-    if (result.confidence > bestConfidence) {
-      bestConfidence = result.confidence;
-      bestMatch = { terminalId: term.id, ...result };
+    const candidateMatch = {
+      terminalId: term.id,
+      browserScore,
+      ...result,
+    };
+
+    // Tie-breaking selection logic:
+    // 1. Prioritize known === true
+    // 2. Higher confidence
+    // 3. Daemon layer valid === true (strongest layer)
+    // 4. Higher browser fuzzy score
+    const isBetterMatch = (candidate, current) => {
+      if (!current) return true;
+      if (candidate.known !== current.known) return candidate.known;
+      if (candidate.confidence !== current.confidence) return candidate.confidence > current.confidence;
+      if (candidate.layers.daemon !== current.layers.daemon) return candidate.layers.daemon === true;
+      return candidate.browserScore > current.browserScore;
+    };
+
+    if (isBetterMatch(candidateMatch, bestMatch)) {
+      bestMatch = candidateMatch;
     }
   }
 
@@ -390,7 +417,7 @@ export const userTerminalsRouter = Router();
  * Lists all non-revoked terminals registered for the authenticated user.
  * Returns terminal metadata only — never exposes raw fingerprint data or secrets.
  */
-userTerminalsRouter.get('/', requireAuth, (req, res) => {
+userTerminalsRouter.get('/', requireAuth, asyncHandler(async (req, res) => {
   const db = getDb();
   const terminals = db.prepare(
     `SELECT id, label, daemon_fp_hash, registered_at, last_seen_at
@@ -408,7 +435,7 @@ userTerminalsRouter.get('/', requireAuth, (req, res) => {
       lastSeenAt: t.last_seen_at,
     })),
   });
-});
+}));
 
 /**
  * DELETE /api/user/terminals/:terminalId
@@ -418,7 +445,7 @@ userTerminalsRouter.get('/', requireAuth, (req, res) => {
  *
  * Soft-delete (rather than hard-delete) preserves the audit trail in auth_events.
  */
-userTerminalsRouter.delete('/:terminalId', requireAuth, (req, res) => {
+userTerminalsRouter.delete('/:terminalId', requireAuth, asyncHandler(async (req, res) => {
   const db = getDb();
   const now = new Date().toISOString();
 
@@ -452,6 +479,6 @@ userTerminalsRouter.delete('/:terminalId', requireAuth, (req, res) => {
   });
 
   res.status(204).end();
-});
+}));
 
 export default router;

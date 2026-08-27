@@ -29,12 +29,23 @@ const router = Router();
  * Unlike user authentication (session-based), admin auth uses a simple
  * static API key. This is intentional for POC simplicity; production
  * would use JWT or OAuth with proper admin role validation.
+ *
+ * Security:
+ *   - Fails closed if ADMIN_KEY is unset or empty (500 Admin misconfigured)
+ *   - Uses crypto.timingSafeEqual with byte-length matching to prevent timing attacks
  */
 function requireAdmin(req, res, next) {
   const key = req.headers['x-admin-key'];
-  const expected = process.env.ADMIN_KEY || '';
+  const expected = process.env.ADMIN_KEY;
 
-  if (!key || typeof key !== 'string' || key.length !== expected.length) {
+  // Fail-closed if ADMIN_KEY is not configured in the server environment
+  if (!expected || typeof expected !== 'string' || expected.trim().length === 0) {
+    console.error('[admin] request blocked: ADMIN_KEY environment variable is not configured');
+    return res.status(500).json({ code: 'admin_misconfigured', message: 'Admin authentication is not configured' });
+  }
+
+  // Reject missing, non-string, or length-mismatched keys before constant-time comparison
+  if (!key || typeof key !== 'string' || Buffer.byteLength(key) !== Buffer.byteLength(expected)) {
     return res.status(401).json({ code: 'invalid_admin_key', message: 'Invalid admin key' });
   }
 
