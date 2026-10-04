@@ -23,11 +23,12 @@ import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
 
-// Brute-force protection for the static admin key
+// Brute-force protection for the static admin key (only failed attempts count)
 const adminRateLimit = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
   keyFn: (req) => `admin:${req.ip}`,
+  failuresOnly: true,
 });
 
 /**
@@ -41,7 +42,7 @@ const adminRateLimit = rateLimit({
  * Security:
  *   - Fails closed if ADMIN_KEY is unset or empty (500 Admin misconfigured)
  *   - Compares SHA-256 digests with crypto.timingSafeEqual (no length/timing leak)
- *   - Rate-limited per IP (20 requests / 15 min)
+ *   - Rate-limited per IP (20 failed attempts / 15 min)
  */
 function requireAdmin(req, res, next) {
   const key = req.headers['x-admin-key'];

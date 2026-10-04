@@ -175,7 +175,7 @@ flowchart LR
 
 ## Quick Start
 
-Prerequisites: **Docker**, **Node.js 20+**
+Prerequisites: **Docker**, **Node.js 20** (see `.nvmrc`)
 
 ```bash
 # (Optional) Install mkcert for locally-trusted TLS — zero browser warnings
@@ -269,7 +269,7 @@ What each mechanism protects against, and where it is enforced:
 | Verification freshness (10 min) for sensitive actions | Long-lived sessions reusing an old daemon verification | `requireKnownTerminal` |
 | Single-use verification nonce (5 min TTL) | Replay of captured verify requests | `GET /api/auth/verify-nonce` + `verify-terminal` |
 | Session regeneration on login | Session fixation | `establishUserSession` (`routes/auth.js`) |
-| Rate limiting (login 20/15min/IP, admin 20/15min/IP, terminal registration 10/h/user) | Brute force, registration abuse | `middleware/rateLimit.js` |
+| Rate limiting (login 20/15min/IP, admin 20 failed attempts/15min/IP, terminal registration 10/h/user) | Brute force, registration abuse | `middleware/rateLimit.js` |
 | Daemon secrets encrypted at rest (AES-256-GCM) | SQLite file/backup leaks | `services/secret-vault.js`, [ADR 001](adr/001-daemon-secret-storage.md) |
 | Data minimization (only the 10 fuzzy-match signals persisted; raw daemon payload discarded) | PII exposure via DB | `pickBrowserSignals` / `pickStableDaemonFields` |
 | Constant-time comparisons (`timingSafeEqual`) | Timing attacks on HMAC/admin key/nonce | fingerprint service, admin routes, nonce check |

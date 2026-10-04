@@ -158,6 +158,14 @@ describe('POST /api/actions/sensitive', () => {
 });
 
 describe('admin key', () => {
+  it('does not rate-limit requests with the correct key', async () => {
+    let last;
+    for (let i = 0; i < 25; i++) {
+      last = await fetch(`${base}/api/admin/terminals`, { headers: { 'x-admin-key': 'test-admin-key' } });
+    }
+    assert.equal(last.status, 200);
+  });
+
   it('rate-limits repeated admin key attempts', async () => {
     let last;
     for (let i = 0; i < 21; i++) {

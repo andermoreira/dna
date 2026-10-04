@@ -12,8 +12,9 @@ const MAX_TRACKED_KEYS = 10_000;
  * @param {number} options.windowMs — window size in milliseconds
  * @param {number} options.max — max requests per key per window
  * @param {(req: import('express').Request) => string} options.keyFn — request → bucket key
+ * @param {boolean} [options.failuresOnly] — count only responses with status >= 400
  */
-export function rateLimit({ windowMs, max, keyFn }) {
+export function rateLimit({ windowMs, max, keyFn, failuresOnly = false }) {
   const buckets = new Map();
 
   // Active periodic cleanup of expired buckets every 2 minutes
@@ -48,14 +49,25 @@ export function rateLimit({ windowMs, max, keyFn }) {
       buckets.set(key, bucket);
     }
 
-    bucket.count++;
-    if (bucket.count > max) {
-      return res.status(429).json({
-        code: 'rate_limited',
-        message: 'Too many requests. Please try again later.',
+    if (failuresOnly) {
+      if (bucket.count >= max) return tooMany(res);
+      const counted = bucket;
+      res.on('finish', () => {
+        if (res.statusCode >= 400) counted.count++;
       });
+      return next();
     }
+
+    bucket.count++;
+    if (bucket.count > max) return tooMany(res);
 
     next();
   };
+}
+
+function tooMany(res) {
+  return res.status(429).json({
+    code: 'rate_limited',
+    message: 'Too many requests. Please try again later.',
+  });
 }
