@@ -122,7 +122,7 @@ router.post('/register', loginRateLimit, asyncHandler(async (req, res) => {
 router.post('/login', loginRateLimit, asyncHandler(async (req, res) => {
   const { username, password } = req.body || {};
 
-  if (!username || !password) {
+  if (!username || !password || typeof username !== 'string' || typeof password !== 'string') {
     return res.status(400).json({ code: 'validation_error', message: 'Username and password are required' });
   }
 

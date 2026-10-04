@@ -220,7 +220,7 @@ npm start          # https://localhost:3000 (data/ is created automatically)
 
 ```bash
 cd server
-npm test           # unit tests (node:test) — fingerprint service
+npm test           # node:test — fingerprint service + route integration tests
 ```
 
 ## Configuration
@@ -238,6 +238,8 @@ local runs.
 | `SESSION_SECRET` | random per boot | express-session secret. Unset = sessions reset on restart |
 | `SECRET_ENC_KEY` | auto-generated file | AES-256 key (base64, 32 bytes) for daemon secrets at rest. Unset = key file at `server/data/secret-enc.key` |
 | `TLS_CERT_PATH` / `TLS_KEY_PATH` | auto-generated | Existing TLS pair (e.g. mkcert) instead of the self-signed cert |
+| `POCDNA_DATA_DIR` | `server/data` | SQLite database directory (tests point it to a temp dir) |
+| `TERMINAL_VERIFY_MAX_AGE_MS` | `600000` (10 min) | How long a terminal verification unlocks sensitive actions |
 
 ### Daemon
 
@@ -263,10 +265,11 @@ What each mechanism protects against, and where it is enforced:
 |---|---|---|
 | ≥2/3 layer quorum for recognition | Single-signal spoofing | `computeConfidence` (`services/fingerprint.js`) |
 | Daemon layer required **per session** for sensitive actions | Headless-browser spoofing, browser+TLS-only recognition | `requireKnownTerminal` (`middleware/requireTerminal.js`) |
-| Daemon payload timestamp (60s window) | Replay of captured daemon payloads | `validateDaemonHmac` |
+| Daemon payload timestamp (60s window) + mandatory nonce challenge (verify and register) | Replay of captured daemon payloads | `validateDaemonHmac`, `routes/terminals.js` |
+| Verification freshness (10 min) for sensitive actions | Long-lived sessions reusing an old daemon verification | `requireKnownTerminal` |
 | Single-use verification nonce (5 min TTL) | Replay of captured verify requests | `GET /api/auth/verify-nonce` + `verify-terminal` |
 | Session regeneration on login | Session fixation | `establishUserSession` (`routes/auth.js`) |
-| Rate limiting (login 20/15min/IP, terminal registration 10/h/user) | Brute force, registration abuse | `middleware/rateLimit.js` |
+| Rate limiting (login 20/15min/IP, admin 20/15min/IP, terminal registration 10/h/user) | Brute force, registration abuse | `middleware/rateLimit.js` |
 | Daemon secrets encrypted at rest (AES-256-GCM) | SQLite file/backup leaks | `services/secret-vault.js`, [ADR 001](adr/001-daemon-secret-storage.md) |
 | Data minimization (only the 10 fuzzy-match signals persisted; raw daemon payload discarded) | PII exposure via DB | `pickBrowserSignals` / `pickStableDaemonFields` |
 | Constant-time comparisons (`timingSafeEqual`) | Timing attacks on HMAC/admin key/nonce | fingerprint service, admin routes, nonce check |
@@ -396,7 +399,7 @@ flowchart TD
 | POST | `/api/auth/login` | — | Login, creates session |
 | POST | `/api/auth/logout` | Session | Destroy session |
 | GET | `/api/auth/me` | Session | Current user info |
-| POST | `/api/auth/register-terminal` | Session | Register new terminal (rate limit: 10/user/hour) |
+| POST | `/api/auth/register-terminal` | Session | Register new terminal (rate limit: 10/user/hour; daemon layer requires `nonce`) |
 | GET | `/api/auth/verify-nonce` | Session | Single-use nonce for verification |
 | POST | `/api/auth/verify-terminal` | Session | Verify current terminal (requires nonce) |
 | GET | `/api/user/terminals` | Session | List user's terminals |
@@ -415,6 +418,7 @@ stable machine-readable identifier, `message` is safe for display.
 | `validation_error` | 400 | Missing/invalid body fields (user register/login) |
 | `invalid_label` / `browser_fp_required` | 400 | Invalid terminal registration payload |
 | `invalid_daemon_signature` | 400 | Daemon HMAC failed (wrong secret or stale timestamp) |
+| `daemon_secret_required` | 400 | Daemon payload sent without the daemon secret at registration |
 | `nonce_invalid` | 400 | Missing, expired or reused verification nonce |
 | `auth_required` | 401 | No valid session |
 | `invalid_credentials` | 401 | Login failed (generic — no user enumeration) |
@@ -422,12 +426,14 @@ stable machine-readable identifier, `message` is safe for display.
 | `terminal_not_authorized` | 403 | No verified terminal in this session |
 | `terminal_revoked` | 403 | Terminal was revoked; re-register |
 | `daemon_layer_required` | 403 | Sensitive action without the daemon layer verified this session |
+| `terminal_verification_expired` | 403 | Last terminal verification older than `TERMINAL_VERIFY_MAX_AGE_MS`; verify again |
 | `terminal_limit_reached` | 403 | More than 5 active terminals |
 | `terminal_not_found` | 404 | Unknown or not-owned terminal id |
 | `username_taken` / `terminal_already_registered` | 409 | Duplicate resource |
 | `terminal_already_revoked` | 409 | Revoke called twice |
-| `rate_limited` | 429 | Too many requests (login or terminal registration) |
+| `rate_limited` | 429 | Too many requests (login, admin or terminal registration) |
 | `session_error` / `logout_failed` | 500 | Session store failure |
+| `admin_misconfigured` | 500 | `ADMIN_KEY` not set — admin API fails closed |
 | `internal_error` | 500 | Unexpected failure (details only in server logs) |
 
 ### Daemon Endpoints
@@ -509,7 +515,7 @@ Roadmap pós-POC (priorizado P0–P3): [docs/melhorias-futuras.md](docs/melhoria
 | Daemon dot stays red on the dashboard | Daemon not running, or its self-signed cert was never accepted | Run `node daemon/daemon.js`; open `https://127.0.0.1:30900/health` once and accept the warning (or install mkcert) |
 | `[server] listening on http://...` + "JA4 layer disabled" | `openssl` not available to generate the server cert | Install openssl or provide `TLS_CERT_PATH`/`TLS_KEY_PATH` |
 | Sensitive action returns `403 daemon_layer_required` on a registered terminal | Last verification ran without the daemon (offline/stopped) | Start the daemon and reload the dashboard (re-verify) |
-| `401` on `/admin.html` with any key | `ADMIN_KEY` not set (fail-closed) | Set `ADMIN_KEY` in `.env` and restart |
+| `500 admin_misconfigured` on `/admin.html` | `ADMIN_KEY` not set (fail-closed) | Set `ADMIN_KEY` in `.env` and restart |
 | `429 rate_limited` while testing | Login (20/15min/IP) or registration (10/h/user) limit hit | Wait for the window to reset (in-memory — restarting the server also clears it) |
 | Terminal stops being recognized after reboot (pre-fix databases) | Daemon key used to live in `/tmp`, wiped on reboot | Keys now live in `~/.pocdna`; re-register the terminal once |
 

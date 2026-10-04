@@ -19,8 +19,16 @@ import crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { getDb } from '../db.js';
 import { logEvent } from '../log.js';
+import { rateLimit } from '../middleware/rateLimit.js';
 
 const router = Router();
+
+// Brute-force protection for the static admin key
+const adminRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  keyFn: (req) => `admin:${req.ip}`,
+});
 
 /**
  * Admin authentication middleware.
@@ -32,7 +40,8 @@ const router = Router();
  *
  * Security:
  *   - Fails closed if ADMIN_KEY is unset or empty (500 Admin misconfigured)
- *   - Uses crypto.timingSafeEqual with byte-length matching to prevent timing attacks
+ *   - Compares SHA-256 digests with crypto.timingSafeEqual (no length/timing leak)
+ *   - Rate-limited per IP (20 requests / 15 min)
  */
 function requireAdmin(req, res, next) {
   const key = req.headers['x-admin-key'];
@@ -44,13 +53,13 @@ function requireAdmin(req, res, next) {
     return res.status(500).json({ code: 'admin_misconfigured', message: 'Admin authentication is not configured' });
   }
 
-  // Reject missing, non-string, or length-mismatched keys before constant-time comparison
-  if (!key || typeof key !== 'string' || Buffer.byteLength(key) !== Buffer.byteLength(expected)) {
+  if (!key || typeof key !== 'string') {
     return res.status(401).json({ code: 'invalid_admin_key', message: 'Invalid admin key' });
   }
 
-  const valid = crypto.timingSafeEqual(Buffer.from(key), Buffer.from(expected));
-  if (!valid) {
+  // Compare fixed-length digests so the key length is not leaked by timing
+  const digest = (value) => crypto.createHash('sha256').update(value).digest();
+  if (!crypto.timingSafeEqual(digest(key), digest(expected))) {
     return res.status(401).json({ code: 'invalid_admin_key', message: 'Invalid admin key' });
   }
 
@@ -71,7 +80,7 @@ function requireAdmin(req, res, next) {
  *     terminals: [{ id, username, label, hasDaemon, hasTls, registeredAt, lastSeenAt, revokedAt }]
  *   }
  */
-router.get('/terminals', requireAdmin, (_req, res) => {
+router.get('/terminals', adminRateLimit, requireAdmin, (_req, res) => {
   const db = getDb();
 
   // Load all terminals with owner username
@@ -115,7 +124,7 @@ router.get('/terminals', requireAdmin, (_req, res) => {
  * Returns 404 if terminal not found.
  * Returns 409 if terminal is already revoked.
  */
-router.post('/terminals/:terminalId/revoke', requireAdmin, (req, res) => {
+router.post('/terminals/:terminalId/revoke', adminRateLimit, requireAdmin, (req, res) => {
   const db = getDb();
   const now = new Date().toISOString();
 

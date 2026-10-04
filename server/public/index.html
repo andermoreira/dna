@@ -318,8 +318,17 @@
       };
 
       if (currentDaemonData && secretInput) {
-        body.daemonPayload = currentDaemonData.payload;
-        body.daemonSignature = currentDaemonData.signature;
+        // Fresh daemon payload bound to a single-use server nonce
+        const nonceRes = await fetch('/api/auth/verify-nonce');
+        const nonce = nonceRes.ok ? (await nonceRes.json()).nonce : null;
+        const daemonData = nonce ? await collectDaemonFP(nonce) : null;
+        if (!daemonData) {
+          toast('Daemon unavailable — could not sign registration', 'error');
+          return;
+        }
+        body.nonce = nonce;
+        body.daemonPayload = daemonData.payload;
+        body.daemonSignature = daemonData.signature;
         body.daemonSecret = secretInput;
       }
 
@@ -348,8 +357,15 @@
 
     async function performSensitiveAction() {
       try {
-        const res = await fetch('/api/actions/sensitive', { method: 'POST' });
-        const data = await res.json();
+        let res = await fetch('/api/actions/sensitive', { method: 'POST' });
+        let data = await res.json();
+
+        // Verification is short-lived: re-verify once and retry
+        if (res.status === 403 && data.code === 'terminal_verification_expired') {
+          renderStatus(await verifyTerminal());
+          res = await fetch('/api/actions/sensitive', { method: 'POST' });
+          data = await res.json();
+        }
 
         if (res.ok) {
           toast('Action completed — terminal verified', 'success');

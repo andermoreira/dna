@@ -22,6 +22,16 @@
 
 import { getDb } from '../db.js';
 
+/** Sensitive actions require a terminal verification newer than this. */
+const DEFAULT_VERIFY_MAX_AGE_MS = 10 * 60 * 1000;
+
+function verifyMaxAgeMs() {
+  const fromEnv = Number(process.env.TERMINAL_VERIFY_MAX_AGE_MS);
+  return Number.isFinite(fromEnv) && process.env.TERMINAL_VERIFY_MAX_AGE_MS !== ''
+    ? fromEnv
+    : DEFAULT_VERIFY_MAX_AGE_MS;
+}
+
 /**
  * Stores the terminal verification result in the user's session.
  *
@@ -41,6 +51,13 @@ export function setTerminalSession(req, terminalId, layers) {
   req.session.terminalId = terminalId;
   req.session.terminalLayers = layers;
   req.session.terminalVerifiedAt = Date.now();
+}
+
+/** Removes the terminal binding from the session. */
+export function clearTerminalSession(req) {
+  req.session.terminalId = null;
+  req.session.terminalLayers = null;
+  req.session.terminalVerifiedAt = null;
 }
 
 /**
@@ -79,9 +96,7 @@ export function requireKnownTerminal(req, res, next) {
 
   if (!terminal) {
     // Terminal was deleted externally (bypassing the normal delete flow)
-    req.session.terminalId = null;
-    req.session.terminalLayers = null;
-    req.session.terminalVerifiedAt = null;
+    clearTerminalSession(req);
     return res.status(403).json({
       code: 'terminal_not_authorized',
       message: 'This terminal is not authorized for this action. Use a registered device or register this one through your account settings.',
@@ -91,9 +106,7 @@ export function requireKnownTerminal(req, res, next) {
   if (terminal.revoked_at) {
     // Terminal was explicitly revoked (by user or admin)
     // Clear the session binding so the user sees the unknown-terminal flow
-    req.session.terminalId = null;
-    req.session.terminalLayers = null;
-    req.session.terminalVerifiedAt = null;
+    clearTerminalSession(req);
     return res.status(403).json({
       code: 'terminal_revoked',
       message: 'This terminal has been revoked. Please register again.',
@@ -110,6 +123,16 @@ export function requireKnownTerminal(req, res, next) {
     });
   }
 
-  // Terminal exists, is active, and its daemon layer was verified in this session
+  // A verification is only trusted for a short window — afterwards the
+  // terminal must be re-verified (fresh daemon challenge)
+  const verifiedAt = req.session.terminalVerifiedAt;
+  if (typeof verifiedAt !== 'number' || Date.now() - verifiedAt > verifyMaxAgeMs()) {
+    return res.status(403).json({
+      code: 'terminal_verification_expired',
+      message: 'Terminal verification expired. Verify this terminal again.',
+    });
+  }
+
+  // Terminal exists, is active, and its daemon layer was verified recently in this session
   next();
 }

@@ -136,8 +136,9 @@ async function main() {
   const sessionCookie = login1.cookie;
   assert(sessionCookie, 'login sets session cookie');
 
-  // --- Daemon Layer 2: signed OS payload + secret for registration ---
-  const daemonRes = await fetch(`${DAEMON}/fingerprint`);
+  // --- Daemon Layer 2: signed OS payload (bound to a nonce) + secret for registration ---
+  const registerNonce = await fetchNonce(sessionCookie);
+  const daemonRes = await fetch(`${DAEMON}/fingerprint?challenge=${encodeURIComponent(registerNonce)}`);
   const daemonData = await daemonRes.json();
   assert(daemonData.payload && daemonData.signature, 'daemon returns signed payload');
 
@@ -164,6 +165,7 @@ async function main() {
     body: {
       label: 'verify-test-terminal',
       browserFP,
+      nonce: registerNonce,
       daemonPayload: daemonData.payload,
       daemonSignature: daemonData.signature,
       daemonSecret,

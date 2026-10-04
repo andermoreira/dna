@@ -45,7 +45,7 @@ import {
   pickStableDaemonFields,
 } from '../services/fingerprint.js';
 import { encryptSecret, decryptSecret } from '../services/secret-vault.js';
-import { setTerminalSession } from '../middleware/requireTerminal.js';
+import { setTerminalSession, clearTerminalSession } from '../middleware/requireTerminal.js';
 import { logEvent } from '../log.js';
 
 const router = Router();
@@ -66,12 +66,13 @@ const registerRateLimit = rateLimit({
  * Registers the current terminal (browser + optional daemon) for the user.
  *
  * Request body:
- *   { label, browserFP, daemonPayload?, daemonSignature?, daemonSecret? }
+ *   { label, browserFP, daemonPayload?, daemonSignature?, daemonSecret?, nonce? }
  *
  * Layer 1 (browser FP) — always required. Only the 10 fuzzy-match signals are
  *   hashed and stored (userAgent, languages etc. are discarded).
- * Layer 2 (daemon FP) — optional. If provided, HMAC signature is validated
- *   against the daemonSecret before storing. The secret is encrypted at rest;
+ * Layer 2 (daemon FP) — optional. If provided, daemonSecret and a nonce from
+ *   GET /verify-nonce are required; the payload must carry that nonce as its
+ *   challenge and its HMAC is validated against the daemonSecret before storing. The secret is encrypted at rest;
  *   the payload hash covers only stable fields and the raw payload is dropped.
  * Layer 3 (TLS JA4)   — extracted by JA4 middleware from the request context.
  *
@@ -81,7 +82,7 @@ const registerRateLimit = rateLimit({
  *   - Invalid daemon HMAC → 400 (check the secret key)
  */
 router.post('/register-terminal', requireAuth, registerRateLimit, asyncHandler(async (req, res) => {
-  const { label, browserFP, daemonPayload, daemonSignature, daemonSecret } = req.body || {};
+  const { label, browserFP, daemonPayload, daemonSignature, daemonSecret, nonce } = req.body || {};
 
   // Validate terminal label
   if (!label || typeof label !== 'string' || label.trim().length === 0 || label.length > 64) {
@@ -132,9 +133,23 @@ router.post('/register-terminal', requireAuth, registerRateLimit, asyncHandler(a
   let daemonFpHash = null;
   let encryptedDaemonSecret = null;
 
-  if (daemonPayload && daemonSignature && daemonSecret) {
+  if (daemonPayload || daemonSignature) {
+    // A daemon payload without its secret would silently register a weak terminal
+    if (!daemonSecret) {
+      return res.status(400).json({
+        code: 'daemon_secret_required',
+        message: 'The daemon secret key is required to register the daemon layer.',
+      });
+    }
+    // The payload must echo a fresh session nonce, as in verify-terminal
+    if (!consumeVerifyNonce(req, nonce)) {
+      return res.status(400).json({
+        code: 'nonce_invalid',
+        message: 'A valid verification nonce is required. Request one at /api/auth/verify-nonce.',
+      });
+    }
     // Validate HMAC signature before trusting the daemon data
-    const valid = validateDaemonHmac(daemonPayload, daemonSignature, daemonSecret);
+    const valid = validateDaemonHmac(daemonPayload, daemonSignature, daemonSecret, nonce);
     if (!valid) {
       return res.status(400).json({
         code: 'invalid_daemon_signature',
@@ -151,37 +166,40 @@ router.post('/register-terminal', requireAuth, registerRateLimit, asyncHandler(a
   const terminalId = uuidv4();
   const ja4Hash = req.ja4?.hash || null;
 
-  // Store terminal record (daemon_fp_data intentionally null — see above)
-  db.prepare(`
-    INSERT INTO terminals
-      (id, user_id, label, browser_fp_hash, browser_fp_data,
-       daemon_fp_hash, daemon_fp_data, ja4_hash,
-       registered_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    terminalId, req.user.id, label.trim(), browserFpHash,
-    JSON.stringify(browserSignals), daemonFpHash, null,
-    ja4Hash, now, now
-  );
+  // Terminal, secret and audit rows are written atomically
+  db.transaction(() => {
+    // Store terminal record (daemon_fp_data intentionally null — see above)
+    db.prepare(`
+      INSERT INTO terminals
+        (id, user_id, label, browser_fp_hash, browser_fp_data,
+         daemon_fp_hash, daemon_fp_data, ja4_hash,
+         registered_at, last_seen_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      terminalId, req.user.id, label.trim(), browserFpHash,
+      JSON.stringify(browserSignals), daemonFpHash, null,
+      ja4Hash, now, now
+    );
 
-  // Store daemon secret key (encrypted at rest) if daemon was used
-  if (encryptedDaemonSecret) {
-    db.prepare(
-      'INSERT INTO daemon_secrets (terminal_id, secret_key, created_at) VALUES (?, ?, ?)'
-    ).run(terminalId, encryptedDaemonSecret, now);
-  }
+    // Store daemon secret key (encrypted at rest) if daemon was used
+    if (encryptedDaemonSecret) {
+      db.prepare(
+        'INSERT INTO daemon_secrets (terminal_id, secret_key, created_at) VALUES (?, ?, ?)'
+      ).run(terminalId, encryptedDaemonSecret, now);
+    }
 
-  // Log audit event
-  db.prepare(`
-    INSERT INTO auth_events
-      (id, user_id, terminal_id, event_type, confidence, layers_matched,
-       ip_address, user_agent, ja4_observed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    uuidv4(), req.user.id, terminalId, 'REGISTER', 1,
-    JSON.stringify({ browser: true, daemon: !!daemonFpHash, tls: !!ja4Hash }),
-    req.ip || '127.0.0.1', req.get('user-agent') || '', ja4Hash, now
-  );
+    // Log audit event
+    db.prepare(`
+      INSERT INTO auth_events
+        (id, user_id, terminal_id, event_type, confidence, layers_matched,
+         ip_address, user_agent, ja4_observed, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      uuidv4(), req.user.id, terminalId, 'REGISTER', 1,
+      JSON.stringify({ browser: true, daemon: !!daemonFpHash, tls: !!ja4Hash }),
+      req.ip || '127.0.0.1', req.get('user-agent') || '', ja4Hash, now
+    );
+  })();
 
   logEvent('terminal.registered', {
     user_id: req.user.id,
@@ -296,10 +314,10 @@ router.post('/verify-terminal', requireAuth, asyncHandler(async (req, res) => {
     let daemonValid = null;
     if (daemonRequired) {
       const secretKey = decryptSecret(term.secret_key);
-      // Validate signature; if payload includes challenge, ensure it matches the verification nonce
-      const expectedChallenge = daemonPayload?.challenge ? nonce : null;
+      // The payload must echo this request's nonce as its challenge — a
+      // challenge-less payload could be replayed within the timestamp window
       daemonValid = (daemonPayload && daemonSignature && secretKey)
-        ? validateDaemonHmac(daemonPayload, daemonSignature, secretKey, expectedChallenge)
+        ? validateDaemonHmac(daemonPayload, daemonSignature, secretKey, nonce)
         : false;
     }
 
@@ -375,7 +393,11 @@ router.post('/verify-terminal', requireAuth, asyncHandler(async (req, res) => {
     });
   }
 
-  // Terminal NOT recognized — log the failed attempt
+  // Terminal NOT recognized — drop any binding from an earlier verification
+  // so the last verification result is what guards sensitive actions
+  clearTerminalSession(req);
+
+  // Log the failed attempt
   const bestConf = bestMatch ? bestMatch.confidence : 0;
   const bestLayers = bestMatch ? bestMatch.layers : { browser: false, daemon: null, tls: null };
 
@@ -404,7 +426,7 @@ router.post('/verify-terminal', requireAuth, asyncHandler(async (req, res) => {
       ? 'No layers matched'
       : 'Only 1 layer matched, need at least 2',
   });
-});
+}));
 
 // ---------------------------------------------------------------------------
 // User terminal management — mounted at /api/user/terminals (spec contract)

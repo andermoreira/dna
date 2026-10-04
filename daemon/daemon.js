@@ -146,8 +146,8 @@ function generateTls() {
       validateCertKeyPair(cert, key);
       return { cert, key, tls: true, method: 'reused' };
     } catch {
-      fs.unlinkSync(CERT_PATH);
-      fs.unlinkSync(KEY_PATH);
+      fs.rmSync(CERT_PATH, { force: true });
+      fs.rmSync(KEY_PATH, { force: true });
     }
   }
 
@@ -306,7 +306,8 @@ function collectOSData(challenge = null) {
     timestamp: Date.now(),
   };
 
-  if (challenge && typeof challenge === 'string' && challenge.length <= 128) {
+  // Only server nonces (16 random bytes, hex) are signed — no arbitrary strings
+  if (typeof challenge === 'string' && /^[0-9a-f]{32}$/.test(challenge)) {
     data.challenge = challenge;
   }
 

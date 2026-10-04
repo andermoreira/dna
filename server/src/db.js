@@ -33,7 +33,7 @@ export function getDb() {
   if (db) return db;
 
   // Database file: server/data/pocdna.db (dir may not exist on a fresh clone)
-  const dataDir = join(__dirname, '..', 'data');
+  const dataDir = process.env.POCDNA_DATA_DIR || join(__dirname, '..', 'data');
   fs.mkdirSync(dataDir, { recursive: true });
   db = new Database(join(dataDir, 'pocdna.db'));
 
